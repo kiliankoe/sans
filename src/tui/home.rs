@@ -65,11 +65,20 @@ pub fn draw(
             } else {
                 Style::new().fg(Color::DarkGray)
             };
-            ListItem::new(Line::from(vec![
+            let row = Line::from(vec![
                 Span::styled(format!("{:>2}  {:<22}", index + 1, lesson.title), base),
                 Span::styled(format!("{:<24}", keys), base),
                 status,
-            ]))
+            ]);
+            let mut lines = Vec::new();
+            if let Some(section) = &lesson.section {
+                lines.push(Line::styled(
+                    section.clone(),
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(row);
+            ListItem::new(lines)
         })
         .collect();
     let list = List::new(items)

@@ -30,6 +30,15 @@ impl StageKind {
         }
     }
 
+    /// What the stage is called on screen; code lessons practise tokens and expressions.
+    pub fn label(self, code: bool) -> &'static str {
+        match (self, code) {
+            (StageKind::Bigrams, true) => "tokens",
+            (StageKind::Words, true) => "expressions",
+            (kind, _) => kind.name(),
+        }
+    }
+
     /// Characters a stage aims for; about two minutes at a beginner's pace.
     pub fn target_len(self) -> usize {
         match self {
@@ -47,6 +56,10 @@ pub struct Lesson {
     pub title: String,
     /// Graphemes this lesson introduces; empty for a review.
     pub new: Vec<String>,
+    /// Code-flavoured text (tokens, expressions, snippet lines) instead of words.
+    pub code: bool,
+    /// A heading shown above this lesson in the list: the start of a track.
+    pub section: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +76,9 @@ struct LessonDef {
     /// The new keys are the capitals of every letter learnt so far.
     #[serde(default)]
     shift: bool,
+    #[serde(default)]
+    code: bool,
+    section: Option<String>,
 }
 
 pub struct Course {
@@ -96,6 +112,8 @@ impl Course {
                 id: def.id,
                 title: def.title,
                 new,
+                code: def.code,
+                section: def.section,
             });
         }
         Ok(Self { lessons })
@@ -199,10 +217,10 @@ mod tests {
     #[test]
     fn embedded_course_parses_with_unique_ids_and_known_keys() {
         let course = course();
-        assert_eq!(course.lessons().len(), 29);
+        assert_eq!(course.lessons().len(), 42);
         let mut ids: Vec<_> = course.lessons().iter().map(|l| l.id.as_str()).collect();
         ids.dedup();
-        assert_eq!(ids.len(), 29);
+        assert_eq!(ids.len(), 42);
         for lesson in course.lessons() {
             for key in &lesson.new {
                 assert!(layout::primary(key).is_some(), "{} has no position", key);
@@ -250,6 +268,33 @@ mod tests {
     }
 
     #[test]
+    fn track_b_starts_after_the_letters_with_a_section_heading() {
+        let course = course();
+        let b01 = course.lessons().iter().position(|l| l.id == "b01").unwrap();
+        assert_eq!(b01, 29);
+        let lesson = &course.lessons()[b01];
+        assert_eq!(lesson.new, ["(", ")"]);
+        assert!(lesson.code);
+        assert_eq!(
+            lesson.section.as_deref(),
+            Some("Track B: symbols (layer 3)")
+        );
+        assert!(!course.lessons()[0].code && course.lessons()[0].section.is_none());
+        let unlocked = course.unlocked_before(b01);
+        assert!(unlocked.contains(&"ß".to_string()) && unlocked.contains(&"E".to_string()));
+        assert!(!unlocked.contains(&"(".to_string()));
+        assert_eq!(StageKind::Bigrams.label(true), "tokens");
+        assert_eq!(StageKind::Words.label(true), "expressions");
+        assert_eq!(StageKind::Words.label(false), "words");
+        let digits = course.lessons().iter().find(|l| l.id == "b12").unwrap();
+        assert_eq!(digits.new.len(), 10);
+        assert_eq!(
+            course.stages(41),
+            [StageKind::Bigrams, StageKind::Words, StageKind::Test]
+        );
+    }
+
+    #[test]
     fn parse_rejects_duplicate_ids() {
         let toml = "[[lesson]]\nid = \"x\"\ntitle = \"a\"\nnew = [\"e\"]\n[[lesson]]\nid = \"x\"\ntitle = \"b\"\n";
         assert!(Course::parse(toml).is_err());
@@ -274,6 +319,6 @@ mod tests {
         for lesson in course.lessons() {
             progress.record(&lesson.id, 0.0);
         }
-        assert_eq!(progress.next_index(&course), 28);
+        assert_eq!(progress.next_index(&course), 41);
     }
 }

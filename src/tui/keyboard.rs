@@ -43,7 +43,12 @@ pub fn draw(
 
 /// The keyboard with one style per key label, for heatmaps.
 pub fn draw_styled(frame: &mut Frame, area: Rect, style_of: impl Fn(&str) -> Style) {
-    for (index, row) in layout::layer1_rows().iter().enumerate() {
+    draw_layer(frame, area, 1, style_of);
+}
+
+/// The keyboard showing the labels of `layer` (1 to 3), one style per label.
+pub fn draw_layer(frame: &mut Frame, area: Rect, layer: u8, style_of: impl Fn(&str) -> Style) {
+    for (index, row) in layout::layer_rows(layer).iter().enumerate() {
         let y = area.y + index as u16;
         if y >= area.bottom() {
             break;

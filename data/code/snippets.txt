@@ -1,0 +1,64 @@
+%% Lines of code for the symbol lessons, one per line, indentation removed. Written for this
+%% project, no licence to honour. A line is used once every character in it is unlocked.
+fn main() {
+let mut count = 0;
+let name = String::from("neo");
+if count == 0 { return; }
+for item in items.iter() {
+match value { Some(v) => v, None => 0 }
+impl Default for Config {
+pub fn new(path: &Path) -> Result<Self> {
+let total: u64 = values.iter().sum();
+println!("{} of {}", done, total);
+assert_eq!(parse("42"), Ok(42));
+#[derive(Debug, Clone)]
+use std::collections::HashMap;
+Ok(())
+const MAX_WIDTH: u16 = 60;
+let width = area.width.min(MAX_WIDTH);
+.filter(|w| w.len() > 3)
+.map(|line| line.trim_end())
+.collect::<Vec<_>>();
+x.iter().any(|c| c.is_uppercase())
+function render(state) {
+const items = list.map((item) => item.name);
+export default function App() {
+return <div className="app">{children}</div>;
+if (!user) { throw new Error("no user"); }
+const [count, setCount] = useState(0);
+await fetch(`/api/items/${id}`);
+console.log("done", result);
+let total = prices.reduce((a, b) => a + b, 0);
+type Props = { title: string; open?: boolean };
+import { useEffect } from "react";
+def main():
+for line in lines:
+if not path.exists():
+print(f"{name}: {value}")
+return [x * 2 for x in items if x > 0]
+with open(path) as f:
+class Config(BaseModel):
+result = {"name": name, "count": count}
+raise ValueError("empty input")
+#!/usr/bin/env bash
+set -euo pipefail
+for f in *.rs; do echo "$f"; done
+if [ -z "$1" ]; then exit 1; fi
+grep -rn "todo" src/ | wc -l
+export PATH="$HOME/.local/bin:$PATH"
+cargo test 2>&1 | tail -n 5
+{ pkgs, ... }:
+packages = with pkgs; [ cargo rustc ];
+inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+programs.git.enable = true;
+git commit -m "fix typo"
+curl -s https://example.org/api | jq '.items[0]'
+ssh user@host 'ls -la ~/backup'
+SELECT name, count(*) FROM session GROUP BY name;
+a = b * (c + d) / 2;
+if (x >= 0 && y != 1) || z {
+value = value % 10;
+mask = flags & ~bit;
+result ^= key << 3;
+version = "1.2.3"
+timeout = 30

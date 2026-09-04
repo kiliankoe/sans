@@ -192,9 +192,10 @@ fn row_name(row: Row) -> &'static str {
     }
 }
 
-/// Layer 1 labels per physical key, row by row, for drawing a keyboard. Dead keys are `""`.
-pub fn layer1_rows() -> [Vec<&'static str>; 4] {
-    LAYERS[0].map(|keys| {
+/// Labels of layer 1, 2 or 3 per physical key, row by row. Dead keys and empty slots are `""`.
+pub fn layer_rows(layer: u8) -> [Vec<&'static str>; 4] {
+    let index = usize::from(layer.clamp(1, 3)) - 1;
+    LAYERS[index].map(|keys| {
         keys.char_indices()
             .map(|(start, c)| {
                 if c == '·' {
@@ -340,8 +341,18 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_rows_of_layer_three_carry_the_symbols() {
+        let rows = layer_rows(3);
+        assert_eq!(rows[2].join(""), "\\/{}*?()-:@");
+        assert_eq!(rows[1][1], "_");
+        assert_eq!(rows[3][0], "#");
+        assert_eq!(rows[0][0], "", "nothing on the far left of the number row");
+        assert_eq!(layer_rows(2)[2].join(""), "UIAEOSNRTDY");
+    }
+
+    #[test]
     fn keyboard_rows_carry_layer_one_labels() {
-        let rows = layer1_rows();
+        let rows = layer_rows(1);
         assert_eq!(rows[2].join(""), "uiaeosnrtdy");
         assert_eq!(rows[1][0], "x");
         assert_eq!(rows[0][0], "", "dead ^ is blank");

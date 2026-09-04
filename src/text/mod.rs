@@ -1,6 +1,7 @@
 //! Text for a stage, generated from the lesson's keys and the word lists. Deterministic for
 //! a given seed, so a stage can be reproduced from its stored session.
 
+pub mod code;
 pub mod corpus;
 pub mod drill;
 pub mod file;
@@ -20,6 +21,8 @@ pub struct StageSpec<'a> {
     pub new: &'a [String],
     /// Every key available, the new ones included.
     pub unlocked: &'a [String],
+    /// Code-flavoured text instead of words.
+    pub code: bool,
     pub seed: u64,
 }
 
@@ -29,6 +32,17 @@ pub fn generate(spec: &StageSpec, corpus: &Corpus) -> String {
     let new = charset(spec.new);
     let target = spec.kind.target_len();
     let syllables = |rng: &mut StdRng| ngram::syllables(corpus, &unlocked, &new, target, rng);
+    if spec.code && spec.kind != StageKind::Intro {
+        let code = code::Code {
+            corpus,
+            charset: &unlocked,
+            new: &new,
+        };
+        return match spec.kind {
+            StageKind::Bigrams => code.tokens(target, &mut rng),
+            _ => code.expressions(target, &mut rng),
+        };
+    }
     match spec.kind {
         StageKind::Intro => {
             let new_chars: Vec<char> = spec.new.iter().filter_map(|g| g.chars().next()).collect();
@@ -92,9 +106,45 @@ mod tests {
             kind,
             new: &new,
             unlocked: &unlocked,
+            code: false,
             seed,
         };
         generate(&spec, &Corpus::load())
+    }
+
+    fn code_text(kind: StageKind, new: &str, before: &str, seed: u64) -> String {
+        let new = strings(new);
+        let unlocked = [strings(before), new.clone()].concat();
+        let spec = StageSpec {
+            kind,
+            new: &new,
+            unlocked: &unlocked,
+            code: true,
+            seed,
+        };
+        generate(&spec, &Corpus::load())
+    }
+
+    const ALL_LETTERS: &str = "abcdefghijklmnopqrstuvwxyzäöüßABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜ,.-";
+
+    #[test]
+    fn code_lessons_drill_symbols_then_tokens_then_expressions() {
+        let intro = code_text(StageKind::Intro, "()", ALL_LETTERS, 1);
+        assert_within(&intro, &format!("{ALL_LETTERS}()"));
+        assert!(
+            intro
+                .split(' ')
+                .any(|u| u.starts_with('(') && u.ends_with(')') && u.len() > 2),
+            "{intro}"
+        );
+        let tokens = code_text(StageKind::Bigrams, "{}", &format!("{ALL_LETTERS}()"), 2);
+        assert_within(&tokens, &format!("{ALL_LETTERS}(){{}}"));
+        assert!(tokens.contains('{'), "{tokens}");
+        let expressions = code_text(StageKind::Words, "{}", &format!("{ALL_LETTERS}()"), 3);
+        assert!(expressions.contains('\n'), "{expressions}");
+        let test = code_text(StageKind::Test, "", &format!("{ALL_LETTERS}(){{}}=\"'"), 4);
+        assert_within(&test, &format!("{ALL_LETTERS}(){{}}=\"'\n"));
+        assert!(test.chars().count() >= 200, "{test}");
     }
 
     #[test]

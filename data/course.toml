@@ -143,3 +143,86 @@ new = ["ß", "-"]
 [[lesson]]
 id = "a29"
 title = "Final review"
+
+# Track B: the symbols of layer 3, held with Mod3, in order of how often they occur in code.
+# Every letter is unlocked by now, so the text is code-flavoured: tokens, expressions and
+# lines from data/code/snippets.txt. Digits come from the number row; the layer 4 numpad is
+# mentioned as an alternative.
+
+[[lesson]]
+id = "b01"
+title = "Parentheses"
+section = "Track B: symbols (layer 3)"
+new = ["(", ")"]
+code = true
+
+[[lesson]]
+id = "b02"
+title = "Equals and quotes"
+new = ["=", "\"", "'"]
+code = true
+
+[[lesson]]
+id = "b03"
+title = "Braces"
+new = ["{", "}"]
+code = true
+
+[[lesson]]
+id = "b04"
+title = "Underscore, colon, semicolon"
+new = ["_", ":", ";"]
+code = true
+
+[[lesson]]
+id = "b05"
+title = "Slashes"
+new = ["/", "\\"]
+code = true
+
+[[lesson]]
+id = "b06"
+title = "Angle brackets"
+new = ["<", ">"]
+code = true
+
+[[lesson]]
+id = "b07"
+title = "Square brackets"
+new = ["[", "]"]
+code = true
+
+[[lesson]]
+id = "b08"
+title = "Minus, plus, star"
+new = ["-", "+", "*"]
+code = true
+
+[[lesson]]
+id = "b09"
+title = "Bang and question mark"
+new = ["!", "?"]
+code = true
+
+[[lesson]]
+id = "b10"
+title = "Ampersand, pipe, hash, at"
+new = ["&", "|", "#", "@"]
+code = true
+
+[[lesson]]
+id = "b11"
+title = "Tilde, backtick, caret, percent, dollar"
+new = ["~", "`", "^", "%", "$"]
+code = true
+
+[[lesson]]
+id = "b12"
+title = "Digits"
+new = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+code = true
+
+[[lesson]]
+id = "b13"
+title = "Code review"
+code = true

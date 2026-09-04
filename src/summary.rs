@@ -42,10 +42,12 @@ pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
         other => bail!("unknown stage {other}; use intro, bigrams, words or test"),
     };
     let unlocked = course.unlocked_through(index);
+    let lesson = &course.lessons()[index];
     let spec = StageSpec {
         kind,
-        new: &course.lessons()[index].new,
+        new: &lesson.new,
         unlocked: &unlocked,
+        code: lesson.code,
         seed,
     };
     println!("{}", text::generate(&spec, &Corpus::load()));

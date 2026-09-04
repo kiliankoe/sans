@@ -16,6 +16,8 @@ use crate::engine::Engine;
 /// What an intro stage shows above the text: the keyboard with the new keys lit and one
 /// hint line per key.
 pub struct HintPane {
+    /// Which layer's labels the keyboard shows: 1 for letters and capitals, 3 for symbols.
+    pub layer: u8,
     pub highlight: HashSet<String>,
     pub unlocked: HashSet<String>,
     pub lines: Vec<String>,
@@ -147,7 +149,22 @@ fn draw_hints(frame: &mut Frame, area: Rect, pane: &HintPane) {
         Constraint::Min(0),
     ])
     .areas(block);
-    keyboard::draw(frame, keyboard_area, &pane.highlight, &pane.unlocked);
+    if pane.layer == 1 {
+        keyboard::draw(frame, keyboard_area, &pane.highlight, &pane.unlocked);
+    } else {
+        keyboard::draw_layer(frame, keyboard_area, pane.layer, |label| {
+            if pane.highlight.contains(label) {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if pane.unlocked.contains(label) {
+                Style::new()
+            } else {
+                Style::new().fg(Color::DarkGray)
+            }
+        });
+    }
     let lines: Vec<Line> = pane
         .lines
         .iter()

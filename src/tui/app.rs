@@ -209,10 +209,12 @@ impl App {
         let kind = kinds[stage.min(kinds.len() - 1)];
         let seed: u64 = rand::random();
         let unlocked = self.course.unlocked_through(lesson);
+        let definition = &self.course.lessons()[lesson];
         let spec = StageSpec {
             kind,
-            new: &self.course.lessons()[lesson].new,
+            new: &definition.new,
             unlocked: &unlocked,
+            code: definition.code,
             seed,
         };
         let text = text::generate(&spec, &self.corpus);
@@ -262,7 +264,7 @@ impl App {
                     lesson + 1,
                     self.course.lessons().len(),
                     definition.title,
-                    kind.name(),
+                    kind.label(definition.code),
                     stage + 1,
                     self.course.stages(*lesson).len()
                 )
@@ -292,12 +294,35 @@ impl App {
             return None;
         };
         let new = &self.course.lessons()[*lesson].new;
-        let lines = if new.iter().all(|key| key.chars().all(char::is_uppercase)) {
+        let all_capitals = new.iter().all(|key| key.chars().all(char::is_uppercase));
+        let all_digits = new
+            .iter()
+            .all(|key| key.chars().all(|c| c.is_ascii_digit()));
+        let lines = if all_capitals {
             vec!["Capitals: hold Shift with the hand that is not typing the letter".to_string()]
+        } else if all_digits {
+            vec![
+                "Digits sit on the number row: 1 to 5 for the left hand, 6 to 0 for the right, \
+                 pinky outward to index inward"
+                    .to_string(),
+                "With Mod4 the right hand also has a numpad: 7 8 9 on h g f, 4 5 6 on n r t, \
+                 1 2 3 on m , . and 0 on space"
+                    .to_string(),
+            ]
         } else {
             new.iter().filter_map(|key| layout::hint(key)).collect()
         };
+        let layer = match new
+            .iter()
+            .filter_map(|key| layout::primary(key))
+            .map(|p| p.layer)
+            .max()
+        {
+            Some(3) => 3,
+            _ => 1,
+        };
         Some(HintPane {
+            layer,
             highlight: new.iter().cloned().collect::<HashSet<_>>(),
             unlocked: self.course.unlocked_through(*lesson).into_iter().collect(),
             lines,
@@ -1149,7 +1174,7 @@ mod tests {
         assert!(find(&buffer, "e and n").is_some());
         assert!(find(&buffer, "next").is_some());
         assert!(find(&buffer, "locked").is_some());
-        assert!(find(&buffer, "0 of 29 lessons passed").is_some());
+        assert!(find(&buffer, "0 of 42 lessons passed").is_some());
     }
 
     #[test]
@@ -1160,7 +1185,7 @@ mod tests {
         app.handle(ch('e'), t0);
         app.handle(ch('x'), t0 + ms(10));
         let buffer = render(&app);
-        assert!(find(&buffer, "Lesson 1 of 29: e and n").is_some());
+        assert!(find(&buffer, "Lesson 1 of 42: e and n").is_some());
         assert!(find(&buffer, "left index finger, home row").is_some());
         assert!(
             find(&buffer, " u  i  a  e  o ").is_some(),
@@ -1184,6 +1209,104 @@ mod tests {
             "given indentation is dim"
         );
         assert!(find(&buffer, "main.rs   chunk 1 of 4").is_some());
+    }
+
+    fn app_with_track_a_passed() -> App {
+        let course = Course::load().unwrap();
+        let mut progress = Progress::new();
+        for lesson in course.lessons().iter().filter(|l| !l.code) {
+            progress.record(&lesson.id, 0.0);
+        }
+        App::new(
+            course,
+            Corpus::load(),
+            progress,
+            Snapshot::empty("2026-09-05"),
+            Vec::new(),
+            Indent::Skip,
+        )
+    }
+
+    #[test]
+    fn symbol_lessons_show_the_layer_three_keyboard_with_modifier_hints() {
+        let mut app = app_with_track_a_passed();
+        let t0 = Instant::now();
+        assert!(
+            matches!(app.screen(), Screen::Home { selected: 29 }),
+            "track B is next"
+        );
+        app.handle(enter(), t0);
+        let active = app.active().unwrap();
+        let hints = app.hint_pane(active).expect("intro hints");
+        assert_eq!(hints.layer, 3);
+        assert_eq!(hints.lines.len(), 2);
+        assert!(
+            hints.lines[0].contains("Mod3 with the left pinky (Caps Lock), then n"),
+            "{:?}",
+            hints.lines
+        );
+        let buffer = render(&app);
+        assert!(find(&buffer, "Lesson 30 of 42: Parentheses   intro (1/4)").is_some());
+        assert!(
+            find(&buffer, " \\  /  {  }  *  ?  (  )  -  :  @ ").is_some(),
+            "layer 3 home row"
+        );
+        let (x, y) = find(&buffer, " ( ").expect("open paren key");
+        assert_eq!(
+            buffer.cell((x + 1, y)).unwrap().bg,
+            Color::Yellow,
+            "new symbol lit"
+        );
+        type_stage(&mut app, t0, None);
+        app.handle(enter(), t0);
+        assert!(app.title(app.active().unwrap()).contains("tokens (2/4)"));
+        let target: String = app.active().unwrap().engine.target().concat();
+        assert!(target.contains('(') && !target.contains('='), "{target}");
+    }
+
+    #[test]
+    fn digits_lesson_mentions_the_numpad() {
+        let mut app = app_with_track_a_passed();
+        let t0 = Instant::now();
+        for _ in 0..11 {
+            app.handle(ch('j'), t0);
+        }
+        assert!(matches!(app.screen(), Screen::Home { selected: 40 }));
+        app.handle(enter(), t0);
+        assert!(
+            matches!(app.screen(), Screen::Home { .. }),
+            "b12 is locked until b11 passes"
+        );
+        let course = Course::load().unwrap();
+        let mut progress = Progress::new();
+        for lesson in course.lessons().iter().take(40) {
+            progress.record(&lesson.id, 0.0);
+        }
+        let mut app = App::new(
+            course,
+            Corpus::load(),
+            progress,
+            Snapshot::empty("2026-09-05"),
+            Vec::new(),
+            Indent::Skip,
+        );
+        app.handle(enter(), t0);
+        let hints = app.hint_pane(app.active().unwrap()).unwrap();
+        assert_eq!(hints.layer, 1);
+        assert!(
+            hints.lines.iter().any(|l| l.contains("numpad")),
+            "{:?}",
+            hints.lines
+        );
+    }
+
+    #[test]
+    fn home_screen_shows_the_track_b_heading() {
+        let mut app = app_with_track_a_passed();
+        let buffer = render(&app);
+        assert!(find(&buffer, "Track B: symbols (layer 3)").is_some());
+        app.handle(ch('k'), Instant::now());
+        assert!(matches!(app.screen(), Screen::Home { selected: 28 }));
     }
 
     #[test]
