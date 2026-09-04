@@ -32,11 +32,13 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
-    /// List recent sessions
+    /// List recent sessions and the habit line; --json dumps everything the stats screen shows
     Stats {
         /// How many sessions to show
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Echo key events as the terminal delivers them, for diagnosing layout and terminal setup
     Keys {
@@ -53,7 +55,7 @@ fn main() -> Result<()> {
             stage,
             seed,
         }) => summary::print_text(&lesson, &stage, seed),
-        Some(Command::Stats { limit }) => summary::print_recent(limit),
+        Some(Command::Stats { limit, json }) => summary::print_recent(limit, json),
         Some(Command::Keys { enhanced }) => keys::run(enhanced),
         None => tui::run(),
     }

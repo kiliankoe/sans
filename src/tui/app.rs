@@ -7,13 +7,15 @@ use std::time::{Duration, Instant, SystemTime};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 
+use super::stats as stats_screen;
+use super::stats::{Range, StatsView};
 use super::typing::HintPane;
 use super::{home, results, typing};
 use crate::clock::Clock;
 use crate::course::{Course, PASS_ERROR_RATE, Progress, StageKind};
 use crate::engine::{Engine, Key, Keystroke, Outcome};
 use crate::layout;
-use crate::stats::{self, Summary};
+use crate::stats::{self, Snapshot, Summary};
 use crate::store::SessionMeta;
 use crate::text::{self, Corpus, StageSpec};
 
@@ -34,6 +36,7 @@ pub enum Screen {
     Home {
         selected: usize,
     },
+    Stats(StatsView),
     Typing(Box<Active>),
     Results {
         active: Box<Active>,
@@ -84,18 +87,20 @@ pub struct App {
     course: Course,
     corpus: Corpus,
     progress: Progress,
+    snapshot: Snapshot,
     screen: Screen,
     flash: Option<(String, Instant)>,
     quit: bool,
 }
 
 impl App {
-    pub fn new(course: Course, corpus: Corpus, progress: Progress) -> Self {
+    pub fn new(course: Course, corpus: Corpus, progress: Progress, snapshot: Snapshot) -> Self {
         let selected = progress.next_index(&course);
         Self {
             course,
             corpus,
             progress,
+            snapshot,
             screen: Screen::Home { selected },
             flash: None,
             quit: false,
@@ -104,6 +109,15 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    /// The event loop refreshes this after every stored session.
+    pub fn set_snapshot(&mut self, snapshot: Snapshot) {
+        self.snapshot = snapshot;
     }
 
     #[cfg(test)]
@@ -115,7 +129,7 @@ impl App {
     pub fn active(&self) -> Option<&Active> {
         match &self.screen {
             Screen::Typing(active) | Screen::Results { active, .. } => Some(active),
-            Screen::Home { .. } => None,
+            Screen::Home { .. } | Screen::Stats(_) => None,
         }
     }
 
@@ -224,6 +238,30 @@ impl App {
                 self.handle_results_key(key);
                 None
             }
+            Screen::Stats(_) => {
+                self.handle_stats_key(key);
+                None
+            }
+        }
+    }
+
+    fn handle_stats_key(&mut self, key: KeyEvent) {
+        let Screen::Stats(view) = &mut self.screen else {
+            return;
+        };
+        match key.code {
+            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => view.next_page(),
+            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => view.prev_page(),
+            KeyCode::Char('1') => view.range = Range::Days30,
+            KeyCode::Char('2') => view.range = Range::Days90,
+            KeyCode::Char('3') => view.range = Range::All,
+            KeyCode::Esc | KeyCode::Char('s') => {
+                self.screen = Screen::Home {
+                    selected: self.progress.next_index(&self.course),
+                };
+            }
+            KeyCode::Char('q') => self.quit = true,
+            _ => {}
         }
     }
 
@@ -243,6 +281,7 @@ impl App {
                     self.flash("locked: pass the lesson before it first", now);
                 }
             }
+            KeyCode::Char('s') => self.screen = Screen::Stats(StatsView::new()),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             _ => {}
         }
@@ -368,10 +407,20 @@ impl App {
         let area = frame.area();
         match &self.screen {
             Screen::Home { selected } => {
-                home::draw(frame, area, &self.course, &self.progress, *selected);
+                home::draw(
+                    frame,
+                    area,
+                    &self.course,
+                    &self.progress,
+                    &self.snapshot.habit,
+                    *selected,
+                );
                 if let Some(message) = self.flash_text(now) {
                     typing::draw_flash(frame, area, &message);
                 }
+            }
+            Screen::Stats(view) => {
+                stats_screen::draw(frame, area, &self.snapshot, view, &self.course)
             }
             Screen::Typing(active) => {
                 let hints = self.hint_pane(active);
@@ -436,6 +485,7 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::stats::Page;
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -443,7 +493,12 @@ mod tests {
     use ratatui::style::Color;
 
     fn app() -> App {
-        App::new(Course::load().unwrap(), Corpus::load(), Progress::new())
+        App::new(
+            Course::load().unwrap(),
+            Corpus::load(),
+            Progress::new(),
+            Snapshot::empty("2026-09-04"),
+        )
     }
 
     fn press(code: KeyCode, modifiers: KeyModifiers) -> Event {
@@ -530,8 +585,35 @@ mod tests {
         assert!(matches!(app.screen(), Screen::Home { selected: 0 }));
         let mut progress = Progress::new();
         progress.record("a01", 0.01);
-        let app = App::new(Course::load().unwrap(), Corpus::load(), progress);
+        let app = App::new(
+            Course::load().unwrap(),
+            Corpus::load(),
+            progress,
+            Snapshot::empty("2026-09-04"),
+        );
         assert!(matches!(app.screen(), Screen::Home { selected: 1 }));
+    }
+
+    #[test]
+    fn stats_screen_opens_from_home_pages_and_returns() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(ch('s'), t0);
+        assert!(matches!(app.screen(), Screen::Stats(view) if view.page == Page::Trend));
+        app.handle(press(KeyCode::Tab, KeyModifiers::NONE), t0);
+        app.handle(ch('3'), t0);
+        assert!(
+            matches!(app.screen(), Screen::Stats(view) if view.page == Page::Keys && view.range == Range::All)
+        );
+        let buffer = render(&app);
+        assert!(find(&buffer, "worst bigrams").is_some());
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(matches!(app.screen(), Screen::Home { selected: 0 }));
+        let buffer = render(&app);
+        assert!(
+            find(&buffer, "streak 0 days").is_some(),
+            "habit line on the home screen"
+        );
     }
 
     #[test]

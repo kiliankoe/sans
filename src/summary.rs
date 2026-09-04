@@ -1,11 +1,29 @@
 //! `neotype stats`: the plain-text view of what is stored. The charts come in phase 3.
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
-use crate::config;
+use crate::config::{self, Config};
 use crate::course::{Course, StageKind};
+use crate::stats::{Habit, Snapshot};
 use crate::store::{SessionRow, Store};
 use crate::text::{self, Corpus, StageSpec};
+
+pub fn habit_line(habit: &Habit) -> String {
+    format!(
+        "streak {} {}   today {:.0} of {} min   total {:.1} h   {} sessions",
+        habit.streak_days,
+        if habit.streak_days == 1 {
+            "day"
+        } else {
+            "days"
+        },
+        habit.today_minutes,
+        habit.target_minutes,
+        habit.total_hours,
+        habit.sessions
+    )
+}
 
 /// `neotype text`: what a stage would look like, without typing it.
 pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
@@ -34,13 +52,32 @@ pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
     Ok(())
 }
 
-pub fn print_recent(limit: usize) -> Result<()> {
+#[derive(Serialize)]
+struct JsonOutput<'a> {
+    #[serde(flatten)]
+    snapshot: &'a Snapshot,
+    sessions: &'a [SessionRow],
+}
+
+pub fn print_recent(limit: usize, json: bool) -> Result<()> {
     let store = Store::open(&config::db_path()?)?;
     let sessions = store.recent_sessions(limit)?;
+    let snapshot = store.snapshot(Config::load()?.daily_minutes)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&JsonOutput {
+                snapshot: &snapshot,
+                sessions: &sessions
+            })?
+        );
+        return Ok(());
+    }
     if sessions.is_empty() {
         println!("No sessions yet.");
         return Ok(());
     }
+    println!("{}\n", habit_line(&snapshot.habit));
     println!("{}", header());
     for session in &sessions {
         println!("{}", format_row(session));

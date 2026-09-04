@@ -7,10 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
+use serde::Serialize;
 
-use crate::course::Progress;
+use crate::course::{PASS_ERROR_RATE, Progress};
 use crate::engine::{Keystroke, KeystrokeKind};
-use crate::stats::Summary;
+use crate::stats::{self, DayStat, LessonStat, Snapshot, Stroke, Summary};
 
 const SCHEMA_VERSION: i64 = 2;
 
@@ -60,7 +61,7 @@ pub struct SessionMeta<'a> {
     pub finished: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SessionRow {
     pub id: i64,
     pub started_at: String,
@@ -185,6 +186,91 @@ impl Store {
         Ok(progress)
     }
 
+    /// Local date of today, from SQLite's clock, `YYYY-MM-DD`.
+    pub fn today(&self) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))?)
+    }
+
+    /// Practice per local day, oldest first.
+    pub fn daily(&self) -> Result<Vec<DayStat>> {
+        let mut select = self.conn.prepare(
+            "SELECT date(started_at, 'localtime') AS day, count(*), sum(chars), sum(errors), sum(active_ms)
+             FROM session GROUP BY day ORDER BY day",
+        )?;
+        let rows = select.query_map([], |row| {
+            Ok(DayStat::new(
+                row.get(0)?,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, i64>(3)? as u64,
+                row.get::<_, i64>(4)? as u64,
+            ))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn lesson_stats(&self) -> Result<Vec<LessonStat>> {
+        let mut select = self.conn.prepare(
+            "SELECT lesson,
+                    count(*),
+                    sum(CASE WHEN stage_kind = 'test' AND finished THEN 1 ELSE 0 END),
+                    min(CASE WHEN stage_kind = 'test' AND finished THEN error_rate END),
+                    max(CASE WHEN finished THEN cpm END),
+                    min(CASE WHEN stage_kind = 'test' AND finished AND error_rate <= ?1
+                             THEN started_at END)
+             FROM session WHERE lesson IS NOT NULL GROUP BY lesson ORDER BY lesson",
+        )?;
+        let rows = select.query_map(params![PASS_ERROR_RATE], |row| {
+            Ok(LessonStat {
+                lesson: row.get(0)?,
+                attempts: row.get::<_, i64>(1)? as u32,
+                tests: row.get::<_, i64>(2)? as u32,
+                best_error_rate: row.get(3)?,
+                best_cpm: row.get(4)?,
+                passed_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Every keystroke with its predecessor in the same session.
+    pub fn strokes(&self) -> Result<Vec<Stroke>> {
+        let mut select = self.conn.prepare(
+            "SELECT expected, kind, lag(expected) OVER w, lag(kind) OVER w,
+                    offset_ms - lag(offset_ms) OVER w
+             FROM keystroke WINDOW w AS (PARTITION BY session_id ORDER BY seq)
+             ORDER BY session_id, seq",
+        )?;
+        let rows = select.query_map([], |row| {
+            Ok(Stroke {
+                expected: row.get(0)?,
+                kind: kind_from_name(&row.get::<_, String>(1)?),
+                prev_expected: row.get(2)?,
+                prev_kind: row
+                    .get::<_, Option<String>>(3)?
+                    .map(|name| kind_from_name(&name)),
+                interval_ms: row.get::<_, Option<i64>>(4)?.map(|ms| ms.max(0) as u64),
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn snapshot(&self, target_minutes: u32) -> Result<Snapshot> {
+        let days = self.daily()?;
+        let strokes = self.strokes()?;
+        let today = self.today()?;
+        Ok(Snapshot {
+            habit: stats::habit(&days, &today, target_minutes),
+            today,
+            days,
+            lessons: self.lesson_stats()?,
+            keys: stats::aggregate_keys(&strokes),
+            bigrams: stats::aggregate_bigrams(&strokes),
+        })
+    }
+
     /// Most recent sessions first.
     pub fn recent_sessions(&self, limit: usize) -> Result<Vec<SessionRow>> {
         let mut select = self.conn.prepare(
@@ -219,6 +305,14 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(count as usize)
+    }
+}
+
+fn kind_from_name(name: &str) -> KeystrokeKind {
+    match name {
+        "wrong" => KeystrokeKind::Wrong,
+        "backspace" => KeystrokeKind::Backspace,
+        _ => KeystrokeKind::Correct,
     }
 }
 
@@ -339,6 +433,75 @@ mod tests {
             store.recent_sessions(1).unwrap()[0].stage_kind.as_deref(),
             Some("intro")
         );
+    }
+
+    #[test]
+    fn daily_lesson_and_stroke_queries_feed_a_snapshot() {
+        let mut store = Store::open_in_memory().unwrap();
+        let log = sample_log();
+        let summary = crate::stats::summarize(&log);
+        let day = |offset_days: u64| {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000 + offset_days * 86_400)
+        };
+        let base = sample_meta();
+        store
+            .record(
+                &SessionMeta {
+                    started_at: day(0),
+                    ..base.clone()
+                },
+                &summary,
+                &log,
+            )
+            .unwrap();
+        store
+            .record(
+                &SessionMeta {
+                    started_at: day(1),
+                    stage_kind: Some("test"),
+                    ..base.clone()
+                },
+                &summary,
+                &log,
+            )
+            .unwrap();
+        store
+            .record(
+                &SessionMeta {
+                    started_at: day(1),
+                    stage_kind: Some("test"),
+                    finished: false,
+                    ..base
+                },
+                &summary,
+                &log,
+            )
+            .unwrap();
+
+        let days = store.daily().unwrap();
+        assert_eq!(days.len(), 2);
+        assert_eq!((days[0].sessions, days[1].sessions), (1, 2));
+        assert_eq!(days[1].chars, 4);
+        assert_eq!(days[1].active_ms, 1200);
+
+        let lessons = store.lesson_stats().unwrap();
+        assert_eq!(lessons.len(), 1);
+        let a01 = &lessons[0];
+        assert_eq!((a01.attempts, a01.tests), (3, 1));
+        assert!((a01.best_error_rate.unwrap() - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(a01.passed_at, None, "a third of errors does not pass");
+
+        let strokes = store.strokes().unwrap();
+        assert_eq!(strokes.len(), 12);
+        assert_eq!(strokes[0].prev_expected, None);
+        assert_eq!(strokes[1].prev_expected.as_deref(), Some("e"));
+        assert_eq!(strokes[1].interval_ms, Some(200));
+        assert_eq!(strokes[4].prev_expected, None, "sessions do not chain");
+
+        let snapshot = store.snapshot(15).unwrap();
+        assert_eq!(snapshot.habit.sessions, 3);
+        assert!(snapshot.keys.iter().any(|k| k.key == "n" && k.errors == 3));
+        assert_eq!(snapshot.today.len(), 10);
     }
 
     #[test]

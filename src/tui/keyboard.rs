@@ -27,6 +27,22 @@ pub fn draw(
         set.iter().map(|k| k.to_lowercase()).collect()
     };
     let (highlight, unlocked) = (lower(highlight), lower(unlocked));
+    draw_styled(frame, area, |label| {
+        if highlight.contains(label) {
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if unlocked.contains(label) {
+            Style::new()
+        } else {
+            Style::new().fg(Color::DarkGray)
+        }
+    });
+}
+
+/// The keyboard with one style per key label, for heatmaps.
+pub fn draw_styled(frame: &mut Frame, area: Rect, style_of: impl Fn(&str) -> Style) {
     for (index, row) in layout::layer1_rows().iter().enumerate() {
         let y = area.y + index as u16;
         if y >= area.bottom() {
@@ -34,15 +50,10 @@ pub fn draw(
         }
         let mut spans = vec![Span::raw(" ".repeat(STAGGER[index]))];
         for label in row {
-            let style = if highlight.contains(*label) {
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if unlocked.contains(*label) {
+            let style = if label.is_empty() {
                 Style::new()
             } else {
-                Style::new().fg(Color::DarkGray)
+                style_of(label)
             };
             let text = if label.is_empty() {
                 "   ".to_string()

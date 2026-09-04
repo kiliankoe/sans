@@ -4,6 +4,7 @@ mod app;
 mod home;
 mod keyboard;
 mod results;
+mod stats;
 mod typing;
 
 use std::io::stdout;
@@ -18,7 +19,7 @@ use ratatui::DefaultTerminal;
 
 pub use app::App;
 
-use crate::config;
+use crate::config::{self, Config};
 use crate::course::Course;
 use crate::store::Store;
 use crate::text::Corpus;
@@ -29,9 +30,11 @@ const TICK: Duration = Duration::from_millis(50);
 pub fn run() -> Result<()> {
     let db = config::db_path()?;
     let mut store = Store::open(&db)?;
+    let config = Config::load()?;
     let course = Course::load()?;
     let progress = store.lesson_progress()?;
-    let mut app = App::new(course, Corpus::load(), progress);
+    let snapshot = store.snapshot(config.daily_minutes)?;
+    let mut app = App::new(course, Corpus::load(), progress, snapshot);
     ratatui::run(|terminal| {
         execute!(stdout(), EnableBracketedPaste, EnableFocusChange)?;
         let result = event_loop(terminal, &mut app, &mut store);
@@ -41,6 +44,7 @@ pub fn run() -> Result<()> {
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Store) -> Result<()> {
+    let target_minutes = app.snapshot().habit.target_minutes;
     while !app.should_quit() {
         terminal.draw(|frame| app.render(frame, Instant::now()))?;
         if event::poll(TICK)? {
@@ -49,6 +53,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Store) 
                 store
                     .record(&end.meta(), &end.summary, &end.log)
                     .context("saving the session")?;
+                app.set_snapshot(store.snapshot(target_minutes)?);
             }
         }
     }

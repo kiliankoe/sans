@@ -7,10 +7,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::course::{Course, Progress};
+use crate::stats::Habit;
+use crate::summary::habit_line;
 
-pub fn draw(frame: &mut Frame, area: Rect, course: &Course, progress: &Progress, selected: usize) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    course: &Course,
+    progress: &Progress,
+    habit: &Habit,
+    selected: usize,
+) {
     let [title_area, list_area, help_area] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(3),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
@@ -27,6 +36,7 @@ pub fn draw(frame: &mut Frame, area: Rect, course: &Course, progress: &Progress,
                 "Track A, letters: {passed} of {} lessons passed",
                 course.lessons().len()
             )),
+            Line::styled(habit_line(habit), Style::new().fg(Color::DarkGray)),
         ]),
         title_area,
     );
@@ -70,7 +80,7 @@ pub fn draw(frame: &mut Frame, area: Rect, course: &Course, progress: &Progress,
 
     frame.render_widget(
         Paragraph::new(Line::styled(
-            "Enter: start    j/k: move    q: quit",
+            "Enter: start    j/k: move    s: stats    q: quit",
             Style::new().fg(Color::DarkGray),
         )),
         help_area,
