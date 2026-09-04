@@ -1,6 +1,8 @@
 //! Terminal UI. Everything that knows about ratatui or crossterm lives under here.
 
 mod app;
+mod home;
+mod keyboard;
 mod results;
 mod typing;
 
@@ -14,18 +16,22 @@ use crossterm::event::{
 use crossterm::execute;
 use ratatui::DefaultTerminal;
 
-pub use app::{App, Drill};
+pub use app::App;
 
 use crate::config;
+use crate::course::Course;
 use crate::store::Store;
+use crate::text::Corpus;
 
 /// Redraw interval while idle, so the live cpm and clock keep moving.
 const TICK: Duration = Duration::from_millis(50);
 
-pub fn run(drill: Drill) -> Result<()> {
+pub fn run() -> Result<()> {
     let db = config::db_path()?;
     let mut store = Store::open(&db)?;
-    let mut app = App::new(drill);
+    let course = Course::load()?;
+    let progress = store.lesson_progress()?;
+    let mut app = App::new(course, Corpus::load(), progress);
     ratatui::run(|terminal| {
         execute!(stdout(), EnableBracketedPaste, EnableFocusChange)?;
         let result = event_loop(terminal, &mut app, &mut store);

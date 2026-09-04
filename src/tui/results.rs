@@ -7,6 +7,7 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 
 use super::typing::clock;
+use crate::course::PASS_ERROR_RATE;
 use crate::stats::Summary;
 
 pub fn draw(
@@ -15,13 +16,16 @@ pub fn draw(
     title: &str,
     summary: &Summary,
     finished: bool,
-    threshold: f64,
+    is_test: bool,
+    next_label: &str,
 ) {
+    let threshold = PASS_ERROR_RATE;
     let passed = finished && summary.error_rate <= threshold;
-    let (headline, color) = match (finished, passed) {
-        (false, _) => ("Stage aborted", Color::Yellow),
-        (true, true) => ("Stage passed", Color::Green),
-        (true, false) => ("Stage complete, but the error rate is too high", Color::Red),
+    let (headline, color) = match (finished, is_test, passed) {
+        (false, _, _) => ("Stage aborted", Color::Yellow),
+        (true, false, _) => ("Stage complete", Color::Green),
+        (true, true, true) => ("Test passed", Color::Green),
+        (true, true, false) => ("Test complete, but the error rate is too high", Color::Red),
     };
     let lines = vec![
         Line::from(title.to_string().bold()),
@@ -41,7 +45,10 @@ pub fn draw(
         )),
         Line::from(format!("active time  {:>6}", clock(summary.active))),
         Line::from(""),
-        Line::styled("Enter: again    q: quit", Style::new().fg(Color::DarkGray)),
+        Line::styled(
+            format!("Enter: {next_label}    r: repeat    Esc: lessons    q: quit"),
+            Style::new().fg(Color::DarkGray),
+        ),
     ];
     let width = lines
         .iter()

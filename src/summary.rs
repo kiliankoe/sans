@@ -1,9 +1,38 @@
 //! `neotype stats`: the plain-text view of what is stored. The charts come in phase 3.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::config;
+use crate::course::{Course, StageKind};
 use crate::store::{SessionRow, Store};
+use crate::text::{self, Corpus, StageSpec};
+
+/// `neotype text`: what a stage would look like, without typing it.
+pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
+    let course = Course::load()?;
+    let Some(index) = course.lessons().iter().position(|l| l.id == lesson) else {
+        bail!(
+            "no lesson {lesson}; ids run a01 to a{:02}",
+            course.lessons().len()
+        );
+    };
+    let kind = match stage {
+        "intro" => StageKind::Intro,
+        "bigrams" => StageKind::Bigrams,
+        "words" => StageKind::Words,
+        "test" => StageKind::Test,
+        other => bail!("unknown stage {other}; use intro, bigrams, words or test"),
+    };
+    let unlocked = course.unlocked_through(index);
+    let spec = StageSpec {
+        kind,
+        new: &course.lessons()[index].new,
+        unlocked: &unlocked,
+        seed,
+    };
+    println!("{}", text::generate(&spec, &Corpus::load()));
+    Ok(())
+}
 
 pub fn print_recent(limit: usize) -> Result<()> {
     let store = Store::open(&config::db_path()?)?;
@@ -27,10 +56,11 @@ fn header() -> String {
 }
 
 pub fn format_row(session: &SessionRow) -> String {
-    let lesson = match (&session.lesson, session.stage) {
-        (Some(lesson), Some(stage)) => format!("{lesson}/{stage}"),
-        (Some(lesson), None) => lesson.clone(),
-        (None, _) => session.kind.clone(),
+    let lesson = match (&session.lesson, &session.stage_kind, session.stage) {
+        (Some(lesson), Some(kind), _) => format!("{lesson}/{kind}"),
+        (Some(lesson), None, Some(stage)) => format!("{lesson}/{stage}"),
+        (Some(lesson), None, None) => lesson.clone(),
+        (None, _, _) => session.kind.clone(),
     };
     format!(
         "{:<20} {:<12} {:>5} {:>6} {:>6.2}% {:>5.0} {}",
@@ -56,6 +86,7 @@ mod tests {
             kind: "lesson".into(),
             lesson: Some("a01".into()),
             stage: Some(2),
+            stage_kind: Some("bigrams".into()),
             chars: 150,
             errors: 3,
             active_ms: 60_000,
@@ -64,7 +95,7 @@ mod tests {
             finished: true,
         };
         let line = format_row(&row);
-        assert!(line.contains("a01/2"), "{line}");
+        assert!(line.contains("a01/bigrams"), "{line}");
         assert!(line.contains("1.96%"), "{line}");
         assert!(line.contains("150"), "{line}");
         assert!(line.ends_with("done"), "{line}");

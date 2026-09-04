@@ -8,10 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
+use crate::course::Progress;
 use crate::engine::{Keystroke, KeystrokeKind};
 use crate::stats::Summary;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE session (
@@ -39,6 +40,9 @@ CREATE TABLE keystroke (
 );
 ";
 
+/// Which stage of a lesson a session was, so passing can be derived from test stages.
+const SCHEMA_V2: &str = "ALTER TABLE session ADD COLUMN stage_kind TEXT;";
+
 pub struct Store {
     conn: Connection,
 }
@@ -49,6 +53,7 @@ pub struct SessionMeta<'a> {
     pub kind: &'a str,
     pub lesson: Option<&'a str>,
     pub stage: Option<u32>,
+    pub stage_kind: Option<&'a str>,
     pub seed: Option<u64>,
     pub started_at: SystemTime,
     /// False when the stage was abandoned before its last character.
@@ -62,6 +67,7 @@ pub struct SessionRow {
     pub kind: String,
     pub lesson: Option<String>,
     pub stage: Option<u32>,
+    pub stage_kind: Option<String>,
     pub chars: usize,
     pub errors: usize,
     pub active_ms: u64,
@@ -89,11 +95,13 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         let store = Self { conn };
-        if store.schema_version()? < SCHEMA_VERSION {
-            store.conn.execute_batch(SCHEMA_V1)?;
+        let migrations = [SCHEMA_V1, SCHEMA_V2];
+        let applied = store.schema_version()?.clamp(0, SCHEMA_VERSION) as usize;
+        for (index, migration) in migrations.iter().enumerate().skip(applied) {
+            store.conn.execute_batch(migration)?;
             store
                 .conn
-                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                .pragma_update(None, "user_version", index as i64 + 1)?;
         }
         Ok(store)
     }
@@ -119,13 +127,16 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO session
-                (started_at, kind, lesson, stage, seed, chars, errors, active_ms, cpm, error_rate, finished)
-             VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                (started_at, kind, lesson, stage, stage_kind, seed, chars, errors, active_ms, cpm,
+                 error_rate, finished)
+             VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                 ?10, ?11, ?12)",
             params![
                 started_at,
                 meta.kind,
                 meta.lesson,
                 meta.stage,
+                meta.stage_kind,
                 meta.seed.map(|seed| seed as i64),
                 summary.chars as i64,
                 summary.errors as i64,
@@ -156,10 +167,29 @@ impl Store {
         Ok(id)
     }
 
+    /// Best error rate per lesson over finished test stages.
+    pub fn lesson_progress(&self) -> Result<Progress> {
+        let mut select = self.conn.prepare(
+            "SELECT lesson, min(error_rate) FROM session
+             WHERE stage_kind = 'test' AND finished = 1 AND lesson IS NOT NULL
+             GROUP BY lesson",
+        )?;
+        let rows = select.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?;
+        let mut progress = Progress::new();
+        for row in rows {
+            let (lesson, best) = row?;
+            progress.record(&lesson, best);
+        }
+        Ok(progress)
+    }
+
     /// Most recent sessions first.
     pub fn recent_sessions(&self, limit: usize) -> Result<Vec<SessionRow>> {
         let mut select = self.conn.prepare(
-            "SELECT id, started_at, kind, lesson, stage, chars, errors, active_ms, cpm, error_rate, finished
+            "SELECT id, started_at, kind, lesson, stage, stage_kind, chars, errors, active_ms, cpm,
+                    error_rate, finished
              FROM session ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = select.query_map(params![limit as i64], |row| {
@@ -169,12 +199,13 @@ impl Store {
                 kind: row.get(2)?,
                 lesson: row.get(3)?,
                 stage: row.get(4)?,
-                chars: row.get::<_, i64>(5)? as usize,
-                errors: row.get::<_, i64>(6)? as usize,
-                active_ms: row.get::<_, i64>(7)? as u64,
-                cpm: row.get(8)?,
-                error_rate: row.get(9)?,
-                finished: row.get(10)?,
+                stage_kind: row.get(5)?,
+                chars: row.get::<_, i64>(6)? as usize,
+                errors: row.get::<_, i64>(7)? as usize,
+                active_ms: row.get::<_, i64>(8)? as u64,
+                cpm: row.get(9)?,
+                error_rate: row.get(10)?,
+                finished: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -224,6 +255,7 @@ mod tests {
             kind: "lesson",
             lesson: Some("a01"),
             stage: Some(1),
+            stage_kind: Some("intro"),
             seed: Some(42),
             started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
             finished: true,
@@ -254,6 +286,59 @@ mod tests {
         assert!((row.error_rate - 1.0 / 3.0).abs() < 1e-9);
         assert!(row.finished);
         assert_eq!(row.started_at, "2027-01-15T08:00:00Z");
+    }
+
+    #[test]
+    fn lesson_progress_comes_from_finished_test_stages_only() {
+        let mut store = Store::open_in_memory().unwrap();
+        let log = sample_log();
+        let mut summary = crate::stats::summarize(&log);
+        let mut record = |lesson: &str, stage_kind: &str, finished: bool, error_rate: f64| {
+            summary.error_rate = error_rate;
+            let meta = SessionMeta {
+                lesson: Some(lesson),
+                stage_kind: Some(stage_kind),
+                finished,
+                ..sample_meta()
+            };
+            store.record(&meta, &summary, &log).unwrap();
+        };
+        record("a01", "test", true, 0.05);
+        record("a01", "test", true, 0.02);
+        record("a02", "words", true, 0.0);
+        record("a03", "test", false, 0.0);
+        let progress = store.lesson_progress().unwrap();
+        assert_eq!(progress.best("a01"), Some(0.02));
+        assert!(progress.passed("a01"));
+        assert!(
+            !progress.passed("a02"),
+            "a words stage does not pass a lesson"
+        );
+        assert!(
+            !progress.passed("a03"),
+            "an abandoned test does not pass a lesson"
+        );
+    }
+
+    #[test]
+    fn a_version_one_database_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("neotype.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        let log = sample_log();
+        store
+            .record(&sample_meta(), &crate::stats::summarize(&log), &log)
+            .unwrap();
+        assert_eq!(
+            store.recent_sessions(1).unwrap()[0].stage_kind.as_deref(),
+            Some("intro")
+        );
     }
 
     #[test]

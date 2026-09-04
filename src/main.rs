@@ -1,10 +1,13 @@
 mod clock;
 mod config;
+mod course;
 mod engine;
 mod keys;
+mod layout;
 mod stats;
 mod store;
 mod summary;
+mod text;
 mod tui;
 
 use anyhow::Result;
@@ -19,6 +22,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the generated text of a lesson stage, for tuning the generators
+    Text {
+        /// Lesson id, for example a08
+        lesson: String,
+        /// Stage: intro, bigrams, words or test
+        #[arg(long, default_value = "words")]
+        stage: String,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
     /// List recent sessions
     Stats {
         /// How many sessions to show
@@ -35,20 +48,13 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Some(Command::Text {
+            lesson,
+            stage,
+            seed,
+        }) => summary::print_text(&lesson, &stage, seed),
         Some(Command::Stats { limit }) => summary::print_recent(limit),
         Some(Command::Keys { enhanced }) => keys::run(enhanced),
-        None => tui::run(phase_one_drill()),
-    }
-}
-
-/// The single hard-coded drill of phase 1; the course replaces it in phase 2.
-fn phase_one_drill() -> tui::Drill {
-    tui::Drill {
-        lesson: "a01".into(),
-        stage: 1,
-        title: "Lesson 1: e and n".into(),
-        text: "eee nnn eee nnn ene nen ene nen een nne enn nne ne en ne en nen ene nee enn een \
-               nnn eee nnn eee nen ene nen ene nne een nne enn en ne en ne ene nen enn nee nne"
-            .into(),
+        None => tui::run(),
     }
 }

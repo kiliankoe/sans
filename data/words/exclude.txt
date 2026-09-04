@@ -1,0 +1,25 @@
+# Words never used in lesson text, one per line. A trailing * excludes every word starting
+# with the prefix. The subtitle lists contain everything people say on screen.
+nigg*
+negro
+neger
+kike
+spic
+chink
+gook
+tranny
+fag
+faggot
+retard*
+schwuchtel*
+kanake*
+spast*
+mongo
+behindert*
+whore*
+slut*
+fotze*
+hure*
+nutte*
+schlampe*
+wichs*

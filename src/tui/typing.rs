@@ -1,5 +1,6 @@
 //! The typing screen: title, the text with per-character state, and a status line.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -9,7 +10,16 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::app::Status;
+use super::keyboard;
 use crate::engine::Engine;
+
+/// What an intro stage shows above the text: the keyboard with the new keys lit and one
+/// hint line per key.
+pub struct HintPane {
+    pub highlight: HashSet<String>,
+    pub unlocked: HashSet<String>,
+    pub lines: Vec<String>,
+}
 
 /// Lesson text never exceeds this width; longer lines wrap as a safety net.
 const MAX_WIDTH: u16 = 60;
@@ -75,13 +85,25 @@ fn visible_typed(grapheme: &str) -> String {
     }
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, title: &str, engine: &Engine, status: &Status) {
-    let [title_area, body, status_area] = Layout::vertical([
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    engine: &Engine,
+    status: &Status,
+    hints: Option<&HintPane>,
+) {
+    let hint_height = hints.map_or(0, |pane| keyboard::HEIGHT + 1 + pane.lines.len() as u16 + 1);
+    let [title_area, hint_area, body, status_area] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(hint_height),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(area);
+    if let Some(pane) = hints {
+        draw_hints(frame, hint_area, pane);
+    }
 
     let mut heading = Line::from(title.to_string().bold());
     if status.paused {
@@ -106,6 +128,47 @@ pub fn draw(frame: &mut Frame, area: Rect, title: &str, engine: &Engine, status:
     );
 
     frame.render_widget(Paragraph::new(status_line(status)), status_area);
+}
+
+fn draw_hints(frame: &mut Frame, area: Rect, pane: &HintPane) {
+    let width = pane
+        .lines
+        .iter()
+        .map(|line| line.chars().count() as u16)
+        .max()
+        .unwrap_or(0)
+        .max(keyboard::WIDTH);
+    let block = centered(area, width.min(area.width), area.height);
+    let [keyboard_area, _, lines_area] = Layout::vertical([
+        Constraint::Length(keyboard::HEIGHT),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(block);
+    keyboard::draw(frame, keyboard_area, &pane.highlight, &pane.unlocked);
+    let lines: Vec<Line> = pane
+        .lines
+        .iter()
+        .map(|line| Line::from(line.clone()))
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), lines_area);
+}
+
+/// A one-line notice at the bottom of any screen.
+pub fn draw_flash(frame: &mut Frame, area: Rect, message: &str) {
+    let line = Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            message.to_string(),
+            Style::new().fg(Color::Yellow),
+        )),
+        line,
+    );
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
