@@ -217,6 +217,13 @@ pub fn aggregate_bigrams(strokes: &[Stroke]) -> Vec<BigramStat> {
         let Some(prev) = &stroke.prev_expected else {
             continue;
         };
+        // A line break or a tab in between is not a hand movement worth measuring.
+        if [prev.as_str(), stroke.expected.as_str()]
+            .iter()
+            .any(|g| *g == "\n" || *g == "\t")
+        {
+            continue;
+        }
         groups
             .entry(format!("{prev}{}", stroke.expected))
             .or_default()

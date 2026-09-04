@@ -1,5 +1,5 @@
-//! Application state: which screen is showing, the stage behind the typing screen, and the
-//! translation of terminal events into engine input.
+//! Application state: which screen is showing, the stage or chunk behind the typing screen,
+//! and the translation of terminal events into engine input.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant, SystemTime};
@@ -10,23 +10,40 @@ use ratatui::Frame;
 use super::stats as stats_screen;
 use super::stats::{Range, StatsView};
 use super::typing::HintPane;
-use super::{home, results, typing};
+use super::{files as files_screen, home, results, typing};
 use crate::clock::Clock;
 use crate::course::{Course, PASS_ERROR_RATE, Progress, StageKind};
 use crate::engine::{Engine, Key, Keystroke, Outcome};
+use crate::files::FileSession;
 use crate::layout;
 use crate::stats::{self, Snapshot, Summary};
-use crate::store::SessionMeta;
+use crate::store::{FileProgress, SessionMeta};
+use crate::text::file::{self as file_text, Indent};
 use crate::text::{self, Corpus, StageSpec};
 
-const FLASH: Duration = Duration::from_millis(900);
+const FLASH: Duration = Duration::from_millis(1500);
+/// Lesson text wraps at this width, code gets more room.
+const LESSON_WIDTH: u16 = 60;
+const FILE_WIDTH: u16 = 100;
+const RECENT_FILES: usize = 20;
 
-/// A stage in progress or just finished.
+/// What a typing session is about.
+pub enum Source {
+    Lesson {
+        lesson: usize,
+        stage: usize,
+        kind: StageKind,
+        seed: u64,
+    },
+    File {
+        session: FileSession,
+        chunk: usize,
+    },
+}
+
+/// A stage or chunk in progress or just finished.
 pub struct Active {
-    pub lesson: usize,
-    pub stage: usize,
-    pub kind: StageKind,
-    pub seed: u64,
+    pub source: Source,
     pub engine: Engine,
     clock: Clock,
     started_at: Option<SystemTime>,
@@ -34,6 +51,9 @@ pub struct Active {
 
 pub enum Screen {
     Home {
+        selected: usize,
+    },
+    Files {
         selected: usize,
     },
     Stats(StatsView),
@@ -45,30 +65,49 @@ pub enum Screen {
     },
 }
 
-/// A completed or abandoned stage, handed to the store by the event loop.
+/// Where a file resumes after a finished chunk.
+pub struct FileProgressUpdate {
+    pub path: String,
+    pub content_hash: String,
+    pub next_chunk: usize,
+    pub chunks: usize,
+}
+
+/// A completed or abandoned session, handed to the store by the event loop.
 pub struct SessionEnd {
-    pub lesson: String,
+    pub kind: &'static str,
+    pub lesson: Option<String>,
+    pub file: Option<String>,
     pub stage: u32,
     pub stage_kind: &'static str,
-    pub seed: u64,
+    pub seed: Option<u64>,
     pub started_at: SystemTime,
     pub finished: bool,
     pub summary: Summary,
+    /// Empty when nothing was typed; the event loop then stores no session.
     pub log: Vec<Keystroke>,
+    pub file_progress: Option<FileProgressUpdate>,
 }
 
 impl SessionEnd {
     pub fn meta(&self) -> SessionMeta<'_> {
         SessionMeta {
-            kind: "lesson",
-            lesson: Some(&self.lesson),
+            kind: self.kind,
+            lesson: self.lesson.as_deref(),
+            file: self.file.as_deref(),
             stage: Some(self.stage),
             stage_kind: Some(self.stage_kind),
-            seed: Some(self.seed),
+            seed: self.seed,
             started_at: self.started_at,
             finished: self.finished,
         }
     }
+}
+
+/// Something the event loop has to do for the app, because it needs the store or the disk.
+pub enum Effect {
+    Store(Box<SessionEnd>),
+    OpenFile(String),
 }
 
 /// Live numbers for the status line.
@@ -88,19 +127,30 @@ pub struct App {
     corpus: Corpus,
     progress: Progress,
     snapshot: Snapshot,
+    files: Vec<FileProgress>,
+    indent: Indent,
     screen: Screen,
     flash: Option<(String, Instant)>,
     quit: bool,
 }
 
 impl App {
-    pub fn new(course: Course, corpus: Corpus, progress: Progress, snapshot: Snapshot) -> Self {
+    pub fn new(
+        course: Course,
+        corpus: Corpus,
+        progress: Progress,
+        snapshot: Snapshot,
+        files: Vec<FileProgress>,
+        indent: Indent,
+    ) -> Self {
         let selected = progress.next_index(&course);
         Self {
             course,
             corpus,
             progress,
             snapshot,
+            files,
+            indent,
             screen: Screen::Home { selected },
             flash: None,
             quit: false,
@@ -120,6 +170,22 @@ impl App {
         self.snapshot = snapshot;
     }
 
+    pub fn set_files(&mut self, files: Vec<FileProgress>) {
+        self.files = files;
+        if let Screen::Files { selected } = &mut self.screen {
+            *selected = (*selected).min(self.files.len().saturating_sub(1));
+        }
+    }
+
+    pub fn recent_files_limit() -> usize {
+        RECENT_FILES
+    }
+
+    /// A message on the current screen's status line for a moment.
+    pub fn notify(&mut self, message: &str, now: Instant) {
+        self.flash = Some((message.to_string(), now));
+    }
+
     #[cfg(test)]
     pub fn screen(&self) -> &Screen {
         &self.screen
@@ -129,7 +195,7 @@ impl App {
     pub fn active(&self) -> Option<&Active> {
         match &self.screen {
             Screen::Typing(active) | Screen::Results { active, .. } => Some(active),
-            Screen::Home { .. } | Screen::Stats(_) => None,
+            Screen::Home { .. } | Screen::Files { .. } | Screen::Stats(_) => None,
         }
     }
 
@@ -151,35 +217,81 @@ impl App {
         };
         let text = text::generate(&spec, &self.corpus);
         self.screen = Screen::Typing(Box::new(Active {
-            lesson,
-            stage,
-            kind,
-            seed,
+            source: Source::Lesson {
+                lesson,
+                stage,
+                kind,
+                seed,
+            },
             engine: Engine::new(&text),
             clock: Clock::new(),
             started_at: None,
         }));
     }
 
+    /// Opens a file at the chunk it resumes from.
+    pub fn start_file(&mut self, session: FileSession, now: Instant) {
+        if let Some(note) = session.note {
+            self.notify(note, now);
+        }
+        let chunk = session.next_chunk;
+        self.start_chunk(session, chunk);
+    }
+
+    fn start_chunk(&mut self, session: FileSession, chunk: usize) {
+        let prepared = file_text::prepare(&session.chunks[chunk], self.indent);
+        self.screen = Screen::Typing(Box::new(Active {
+            source: Source::File { session, chunk },
+            engine: Engine::with_given(prepared.target, prepared.given),
+            clock: Clock::new(),
+            started_at: None,
+        }));
+    }
+
     fn title(&self, active: &Active) -> String {
-        let lesson = &self.course.lessons()[active.lesson];
-        format!(
-            "Lesson {} of {}: {}   {} ({}/{})",
-            active.lesson + 1,
-            self.course.lessons().len(),
-            lesson.title,
-            active.kind.name(),
-            active.stage + 1,
-            self.course.stages(active.lesson).len()
-        )
+        match &active.source {
+            Source::Lesson {
+                lesson,
+                stage,
+                kind,
+                ..
+            } => {
+                let definition = &self.course.lessons()[*lesson];
+                format!(
+                    "Lesson {} of {}: {}   {} ({}/{})",
+                    lesson + 1,
+                    self.course.lessons().len(),
+                    definition.title,
+                    kind.name(),
+                    stage + 1,
+                    self.course.stages(*lesson).len()
+                )
+            }
+            Source::File { session, chunk } => {
+                let part = &session.chunks[*chunk];
+                format!(
+                    "{}   chunk {} of {}   lines {} to {}",
+                    files_screen::file_name(&session.path),
+                    chunk + 1,
+                    session.chunks.len(),
+                    part.first_line + 1,
+                    part.first_line + part.lines.len()
+                )
+            }
+        }
     }
 
     /// Keyboard and finger hints, shown on intro stages only.
     fn hint_pane(&self, active: &Active) -> Option<HintPane> {
-        if active.kind != StageKind::Intro {
+        let Source::Lesson {
+            lesson,
+            kind: StageKind::Intro,
+            ..
+        } = &active.source
+        else {
             return None;
-        }
-        let new = &self.course.lessons()[active.lesson].new;
+        };
+        let new = &self.course.lessons()[*lesson].new;
         let lines = if new.iter().all(|key| key.chars().all(char::is_uppercase)) {
             vec!["Capitals: hold Shift with the hand that is not typing the letter".to_string()]
         } else {
@@ -187,17 +299,13 @@ impl App {
         };
         Some(HintPane {
             highlight: new.iter().cloned().collect::<HashSet<_>>(),
-            unlocked: self
-                .course
-                .unlocked_through(active.lesson)
-                .into_iter()
-                .collect(),
+            unlocked: self.course.unlocked_through(*lesson).into_iter().collect(),
             lines,
         })
     }
 
-    /// Handles one terminal event. Returns a session to store when a stage ends.
-    pub fn handle(&mut self, event: Event, now: Instant) -> Option<SessionEnd> {
+    /// Handles one terminal event.
+    pub fn handle(&mut self, event: Event, now: Instant) -> Option<Effect> {
         match event {
             Event::FocusLost => {
                 if let Screen::Typing(active) = &mut self.screen {
@@ -212,7 +320,7 @@ impl App {
                 None
             }
             Event::Paste(_) => {
-                self.flash("pasting is not typing", now);
+                self.notify("pasting is not typing", now);
                 None
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key, now),
@@ -220,11 +328,11 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent, now: Instant) -> Option<SessionEnd> {
+    fn handle_key(&mut self, key: KeyEvent, now: Instant) -> Option<Effect> {
         if is_ctrl_c(&key) {
             self.quit = true;
             return match self.screen {
-                Screen::Typing(_) => self.finish(false),
+                Screen::Typing(_) => self.finish(false).map(|end| Effect::Store(Box::new(end))),
                 _ => None,
             };
         }
@@ -233,7 +341,10 @@ impl App {
                 self.handle_home_key(key, now);
                 None
             }
-            Screen::Typing(_) => self.handle_typing_key(key, now),
+            Screen::Files { .. } => self.handle_files_key(key),
+            Screen::Typing(_) => self
+                .handle_typing_key(key, now)
+                .map(|end| Effect::Store(Box::new(end))),
             Screen::Results { .. } => {
                 self.handle_results_key(key);
                 None
@@ -242,26 +353,6 @@ impl App {
                 self.handle_stats_key(key);
                 None
             }
-        }
-    }
-
-    fn handle_stats_key(&mut self, key: KeyEvent) {
-        let Screen::Stats(view) = &mut self.screen else {
-            return;
-        };
-        match key.code {
-            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => view.next_page(),
-            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => view.prev_page(),
-            KeyCode::Char('1') => view.range = Range::Days30,
-            KeyCode::Char('2') => view.range = Range::Days90,
-            KeyCode::Char('3') => view.range = Range::All,
-            KeyCode::Esc | KeyCode::Char('s') => {
-                self.screen = Screen::Home {
-                    selected: self.progress.next_index(&self.course),
-                };
-            }
-            KeyCode::Char('q') => self.quit = true,
-            _ => {}
         }
     }
 
@@ -278,13 +369,71 @@ impl App {
                 if self.progress.available(&self.course, selected) {
                     self.start_stage(selected, 0);
                 } else {
-                    self.flash("locked: pass the lesson before it first", now);
+                    self.notify("locked: pass the lesson before it first", now);
                 }
             }
             KeyCode::Char('s') => self.screen = Screen::Stats(StatsView::new()),
+            KeyCode::Char('f') => self.screen = Screen::Files { selected: 0 },
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             _ => {}
         }
+    }
+
+    fn handle_files_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        let Screen::Files { selected } = &mut self.screen else {
+            return None;
+        };
+        let last = self.files.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => *selected = (*selected + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Enter => {
+                return self
+                    .files
+                    .get(*selected)
+                    .map(|file| Effect::OpenFile(file.path.clone()));
+            }
+            KeyCode::Esc | KeyCode::Char('f') => self.go_home(),
+            KeyCode::Char('q') => self.quit = true,
+            _ => {}
+        }
+        None
+    }
+
+    fn handle_stats_key(&mut self, key: KeyEvent) {
+        let Screen::Stats(view) = &mut self.screen else {
+            return;
+        };
+        match key.code {
+            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => view.next_page(),
+            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => view.prev_page(),
+            KeyCode::Char('1') => view.range = Range::Days30,
+            KeyCode::Char('2') => view.range = Range::Days90,
+            KeyCode::Char('3') => view.range = Range::All,
+            KeyCode::Esc | KeyCode::Char('s') => self.go_home(),
+            KeyCode::Char('q') => self.quit = true,
+            _ => {}
+        }
+    }
+
+    fn go_home(&mut self) {
+        self.screen = Screen::Home {
+            selected: self.progress.next_index(&self.course),
+        };
+    }
+
+    /// Back to the list the active session came from.
+    fn go_back(&mut self, source: &Source) {
+        self.screen = match source {
+            Source::Lesson { lesson, .. } => Screen::Home { selected: *lesson },
+            Source::File { session, .. } => Screen::Files {
+                selected: self
+                    .files
+                    .iter()
+                    .position(|f| f.path == session.path)
+                    .unwrap_or(0),
+            },
+        };
     }
 
     fn handle_typing_key(&mut self, key: KeyEvent, now: Instant) -> Option<SessionEnd> {
@@ -293,9 +442,12 @@ impl App {
         };
         if key.code == KeyCode::Esc {
             if active.engine.log().is_empty() {
-                self.screen = Screen::Home {
-                    selected: active.lesson,
+                let Screen::Typing(active) =
+                    std::mem::replace(&mut self.screen, Screen::Home { selected: 0 })
+                else {
+                    return None;
                 };
+                self.go_back(&active.source);
                 return None;
             }
             return self.finish(false);
@@ -307,7 +459,7 @@ impl App {
         }
         let at = active.clock.at(now);
         match active.engine.input(input, at) {
-            Outcome::Refused => self.flash("fix the error first (Backspace)", now),
+            Outcome::Refused => self.notify("fix the error first (Backspace)", now),
             Outcome::Finished => return self.finish(true),
             _ => {}
         }
@@ -323,29 +475,65 @@ impl App {
         else {
             return;
         };
-        let (lesson, stage, kind) = (active.lesson, active.stage, active.kind);
-        let passed = *finished && summary.error_rate <= PASS_ERROR_RATE;
+        let finished = *finished;
+        let passed = finished && summary.error_rate <= PASS_ERROR_RATE;
         match key.code {
-            KeyCode::Enter => match (*finished, kind) {
-                (true, StageKind::Test) if passed => {
-                    if lesson + 1 < self.course.lessons().len() {
-                        self.start_stage(lesson + 1, 0);
-                    } else {
-                        self.screen = Screen::Home { selected: lesson };
+            KeyCode::Enter => match &active.source {
+                Source::Lesson {
+                    lesson,
+                    stage,
+                    kind,
+                    ..
+                } => {
+                    let (lesson, stage, kind) = (*lesson, *stage, *kind);
+                    match (finished, kind) {
+                        (true, StageKind::Test) if passed => {
+                            if lesson + 1 < self.course.lessons().len() {
+                                self.start_stage(lesson + 1, 0);
+                            } else {
+                                self.screen = Screen::Home { selected: lesson };
+                            }
+                        }
+                        (true, StageKind::Test) => self.start_stage(lesson, stage),
+                        (true, _) => self.start_stage(lesson, stage + 1),
+                        (false, _) => self.start_stage(lesson, stage),
                     }
                 }
-                (true, StageKind::Test) => self.start_stage(lesson, stage),
-                (true, _) => self.start_stage(lesson, stage + 1),
-                (false, _) => self.start_stage(lesson, stage),
+                Source::File { session, chunk } => {
+                    let (session, chunk) = (session.clone(), *chunk);
+                    match finished {
+                        true if chunk + 1 < session.chunks.len() => {
+                            self.start_chunk(session, chunk + 1)
+                        }
+                        true => self.go_back(&Source::File { session, chunk }),
+                        false => self.start_chunk(session, chunk),
+                    }
+                }
             },
-            KeyCode::Char('r') => self.start_stage(lesson, stage),
-            KeyCode::Esc | KeyCode::Char('h') => self.screen = Screen::Home { selected: lesson },
+            KeyCode::Char('r') => match &active.source {
+                Source::Lesson { lesson, stage, .. } => {
+                    let (lesson, stage) = (*lesson, *stage);
+                    self.start_stage(lesson, stage);
+                }
+                Source::File { session, chunk } => {
+                    let (session, chunk) = (session.clone(), *chunk);
+                    self.start_chunk(session, chunk);
+                }
+            },
+            KeyCode::Esc | KeyCode::Char('h') => {
+                let Screen::Results { active, .. } =
+                    std::mem::replace(&mut self.screen, Screen::Home { selected: 0 })
+                else {
+                    return;
+                };
+                self.go_back(&active.source);
+            }
             KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
     }
 
-    /// Moves to the results screen. Returns nothing to store when nothing was typed.
+    /// Moves to the results screen and describes what to store.
     fn finish(&mut self, finished: bool) -> Option<SessionEnd> {
         let Screen::Typing(active) =
             std::mem::replace(&mut self.screen, Screen::Home { selected: 0 })
@@ -354,30 +542,57 @@ impl App {
         };
         let log = active.engine.log().to_vec();
         let summary = stats::summarize(&log);
-        let lesson_id = self.course.lessons()[active.lesson].id.clone();
-        if finished && active.kind == StageKind::Test {
-            self.progress.record(&lesson_id, summary.error_rate);
-        }
-        let end = (!log.is_empty()).then(|| SessionEnd {
-            lesson: lesson_id,
-            stage: active.stage as u32 + 1,
-            stage_kind: active.kind.name(),
-            seed: active.seed,
-            started_at: active.started_at.unwrap_or_else(SystemTime::now),
-            finished,
-            summary: summary.clone(),
-            log,
-        });
+        let started_at = active.started_at.unwrap_or_else(SystemTime::now);
+        let end = match &active.source {
+            Source::Lesson {
+                lesson,
+                stage,
+                kind,
+                seed,
+            } => {
+                let lesson_id = self.course.lessons()[*lesson].id.clone();
+                if finished && *kind == StageKind::Test {
+                    self.progress.record(&lesson_id, summary.error_rate);
+                }
+                SessionEnd {
+                    kind: "lesson",
+                    lesson: Some(lesson_id),
+                    file: None,
+                    stage: *stage as u32 + 1,
+                    stage_kind: kind.name(),
+                    seed: Some(*seed),
+                    started_at,
+                    finished,
+                    summary: summary.clone(),
+                    log,
+                    file_progress: None,
+                }
+            }
+            Source::File { session, chunk } => SessionEnd {
+                kind: "file",
+                lesson: None,
+                file: Some(session.path.clone()),
+                stage: *chunk as u32 + 1,
+                stage_kind: "chunk",
+                seed: None,
+                started_at,
+                finished,
+                summary: summary.clone(),
+                log,
+                file_progress: finished.then(|| FileProgressUpdate {
+                    path: session.path.clone(),
+                    content_hash: session.content_hash.clone(),
+                    next_chunk: chunk + 1,
+                    chunks: session.chunks.len(),
+                }),
+            },
+        };
         self.screen = Screen::Results {
             active,
             summary,
             finished,
         };
-        end
-    }
-
-    fn flash(&mut self, message: &str, now: Instant) {
-        self.flash = Some((message.to_string(), now));
+        (!end.log.is_empty() || end.file_progress.is_some()).then_some(end)
     }
 
     fn flash_text(&self, now: Instant) -> Option<String> {
@@ -419,11 +634,21 @@ impl App {
                     typing::draw_flash(frame, area, &message);
                 }
             }
+            Screen::Files { selected } => {
+                files_screen::draw(frame, area, &self.files, *selected);
+                if let Some(message) = self.flash_text(now) {
+                    typing::draw_flash(frame, area, &message);
+                }
+            }
             Screen::Stats(view) => {
                 stats_screen::draw(frame, area, &self.snapshot, view, &self.course)
             }
             Screen::Typing(active) => {
                 let hints = self.hint_pane(active);
+                let width = match active.source {
+                    Source::Lesson { .. } => LESSON_WIDTH,
+                    Source::File { .. } => FILE_WIDTH,
+                };
                 typing::draw(
                     frame,
                     area,
@@ -431,6 +656,7 @@ impl App {
                     &active.engine,
                     &self.status(active, now),
                     hints.as_ref(),
+                    width,
                 );
             }
             Screen::Results {
@@ -439,21 +665,34 @@ impl App {
                 finished,
             } => {
                 let passed = *finished && summary.error_rate <= PASS_ERROR_RATE;
-                let next = match (*finished, active.kind) {
-                    (true, StageKind::Test) if passed => "next lesson",
-                    (true, StageKind::Test) => "try the test again",
-                    (true, _) => "next stage",
-                    (false, _) => "repeat",
+                let (what, is_test, next) = match &active.source {
+                    Source::Lesson { kind, .. } => {
+                        let next = match (*finished, kind) {
+                            (true, StageKind::Test) if passed => "next lesson",
+                            (true, StageKind::Test) => "try the test again",
+                            (true, _) => "next stage",
+                            (false, _) => "repeat",
+                        };
+                        ("Stage", *kind == StageKind::Test, next)
+                    }
+                    Source::File { session, chunk } => {
+                        let next = match *finished {
+                            true if chunk + 1 < session.chunks.len() => "next chunk",
+                            true => "back to files",
+                            false => "repeat",
+                        };
+                        ("Chunk", false, next)
+                    }
                 };
-                results::draw(
-                    frame,
-                    area,
-                    &self.title(active),
+                let view = results::View {
+                    title: &self.title(active),
                     summary,
-                    *finished,
-                    active.kind == StageKind::Test,
-                    next,
-                );
+                    finished: *finished,
+                    what,
+                    is_test,
+                    next_label: next,
+                };
+                results::draw(frame, area, &view);
             }
         }
     }
@@ -490,7 +729,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
 
     fn app() -> App {
         App::new(
@@ -498,6 +737,8 @@ mod tests {
             Corpus::load(),
             Progress::new(),
             Snapshot::empty("2026-09-04"),
+            Vec::new(),
+            Indent::Skip,
         )
     }
 
@@ -517,11 +758,28 @@ mod tests {
         Duration::from_millis(n)
     }
 
+    fn stored(effect: Option<Effect>) -> Option<SessionEnd> {
+        match effect {
+            Some(Effect::Store(end)) => Some(*end),
+            _ => None,
+        }
+    }
+
     /// Types the whole current stage, `wrong_every` characters preceded by a mistake.
     fn type_stage(app: &mut App, t0: Instant, wrong_every: Option<usize>) -> Option<SessionEnd> {
-        let target = app.active().expect("a stage").engine.target().to_vec();
+        let active = app.active().expect("a stage");
+        let target: Vec<(String, bool)> = active
+            .engine
+            .target()
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.clone(), active.engine.is_given(i)))
+            .collect();
         let mut end = None;
-        for (index, grapheme) in target.iter().enumerate() {
+        for (index, (grapheme, given)) in target.iter().enumerate() {
+            if *given {
+                continue;
+            }
             let at = t0 + ms(200 * index as u64);
             if wrong_every.is_some_and(|n| index % n == 0) {
                 let wrong = if grapheme == "x" { 'y' } else { 'x' };
@@ -530,16 +788,45 @@ mod tests {
             }
             let event = match grapheme.as_str() {
                 "\n" => enter(),
+                "\t" => press(KeyCode::Tab, KeyModifiers::NONE),
                 g => ch(g.chars().next().unwrap()),
             };
-            end = app.handle(event, at + ms(100));
+            end = stored(app.handle(event, at + ms(100)));
         }
         end
     }
 
     fn stage_of(app: &App) -> (usize, usize, StageKind) {
-        let active = app.active().expect("a stage");
-        (active.lesson, active.stage, active.kind)
+        match &app.active().expect("a stage").source {
+            Source::Lesson {
+                lesson,
+                stage,
+                kind,
+                ..
+            } => (*lesson, *stage, *kind),
+            Source::File { .. } => panic!("a file, not a lesson"),
+        }
+    }
+
+    fn chunk_of(app: &App) -> usize {
+        match &app.active().expect("a chunk").source {
+            Source::File { chunk, .. } => *chunk,
+            Source::Lesson { .. } => panic!("a lesson, not a file"),
+        }
+    }
+
+    fn file_session() -> FileSession {
+        let text: String = (0..15)
+            .map(|i| format!("fn f{i}() {{\n    let x = {i};\n}}\n"))
+            .collect();
+        let lines = file_text::normalise(&text);
+        FileSession {
+            path: "/tmp/somewhere/main.rs".into(),
+            content_hash: file_text::content_hash(&lines),
+            chunks: file_text::chunks(&lines),
+            next_chunk: 0,
+            note: None,
+        }
     }
 
     #[test]
@@ -590,6 +877,8 @@ mod tests {
             Corpus::load(),
             progress,
             Snapshot::empty("2026-09-04"),
+            Vec::new(),
+            Indent::Skip,
         );
         assert!(matches!(app.screen(), Screen::Home { selected: 1 }));
     }
@@ -718,8 +1007,7 @@ mod tests {
         let t0 = Instant::now();
         app.handle(enter(), t0);
         app.handle(ch('e'), t0);
-        let end = app
-            .handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(100))
+        let end = stored(app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(100)))
             .expect("stored");
         assert!(!end.finished);
         assert!(matches!(
@@ -751,16 +1039,94 @@ mod tests {
         let t0 = Instant::now();
         app.handle(enter(), t0);
         app.handle(ch('e'), t0);
-        let end = app.handle(
+        let end = stored(app.handle(
             press(KeyCode::Char('c'), KeyModifiers::CONTROL),
             t0 + ms(10),
-        );
+        ));
         assert!(end.is_some_and(|end| !end.finished));
         assert!(app.should_quit());
     }
 
+    #[test]
+    fn a_file_is_typed_chunk_by_chunk_with_indentation_given() {
+        let mut app = app();
+        let t0 = Instant::now();
+        let session = file_session();
+        assert_eq!(session.chunks.len(), 4, "45 lines in chunks of 12");
+        app.start_file(session, t0);
+        assert_eq!(chunk_of(&app), 0);
+        assert!(
+            app.title(app.active().unwrap())
+                .contains("main.rs   chunk 1 of 4   lines 1 to 12")
+        );
+        let engine = &app.active().unwrap().engine;
+        let indent_index = engine.target().iter().position(|g| g == "\n").unwrap() + 1;
+        assert!(
+            engine.is_given(indent_index),
+            "the second line's indentation is given"
+        );
+        assert!(!engine.is_given(indent_index + 4));
+        let end = type_stage(&mut app, t0, None).expect("stored");
+        assert_eq!((end.kind, end.stage_kind, end.stage), ("file", "chunk", 1));
+        assert_eq!(end.file.as_deref(), Some("/tmp/somewhere/main.rs"));
+        let progress = end.file_progress.expect("progress after a finished chunk");
+        assert_eq!((progress.next_chunk, progress.chunks), (1, 4));
+        app.handle(enter(), t0);
+        assert_eq!(chunk_of(&app), 1);
+        app.handle(ch('f'), t0);
+        let end = stored(app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0))
+            .expect("aborted chunk stored");
+        assert!(!end.finished && end.file_progress.is_none());
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(
+            matches!(app.screen(), Screen::Files { .. }),
+            "a file session goes back to the files list"
+        );
+    }
+
+    #[test]
+    fn the_last_chunk_returns_to_the_files_list() {
+        let mut app = app();
+        let t0 = Instant::now();
+        let mut session = file_session();
+        session.next_chunk = 3;
+        app.start_file(session, t0);
+        assert_eq!(chunk_of(&app), 3);
+        let end = type_stage(&mut app, t0, None).unwrap();
+        assert_eq!(end.file_progress.unwrap().next_chunk, 4);
+        let buffer = render(&app);
+        assert!(find(&buffer, "Chunk complete").is_some());
+        assert!(find(&buffer, "Enter: back to files").is_some());
+        app.handle(enter(), t0);
+        assert!(matches!(app.screen(), Screen::Files { .. }));
+    }
+
+    #[test]
+    fn files_screen_lists_files_and_asks_the_loop_to_open_one() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(ch('f'), t0);
+        assert!(matches!(app.screen(), Screen::Files { selected: 0 }));
+        assert!(app.handle(enter(), t0).is_none(), "nothing to open");
+        app.set_files(vec![FileProgress {
+            path: "/tmp/somewhere/main.rs".into(),
+            content_hash: "h".into(),
+            next_chunk: 2,
+            chunks: 4,
+            updated_at: "2026-09-05T10:00:00Z".into(),
+        }]);
+        let buffer = render(&app);
+        assert!(find(&buffer, "main.rs").is_some());
+        assert!(find(&buffer, "chunk 3 of 4").is_some());
+        assert!(
+            matches!(app.handle(enter(), t0), Some(Effect::OpenFile(path)) if path == "/tmp/somewhere/main.rs")
+        );
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+    }
+
     fn render(app: &App) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
         terminal
             .draw(|frame| app.render(frame, Instant::now()))
             .unwrap();
@@ -803,6 +1169,21 @@ mod tests {
         let (x, y) = find(&buffer, "exe").expect("typed e then wrong x");
         assert_eq!(buffer.cell((x + 1, y)).unwrap().bg, Color::Red);
         assert!(find(&buffer, "1 error").is_some());
+    }
+
+    #[test]
+    fn file_screen_renders_given_indentation_dim() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.start_file(file_session(), t0);
+        let buffer = render(&app);
+        let (x, y) = find(&buffer, "    let x = 0;").expect("indented line");
+        let cell = buffer.cell((x, y)).unwrap();
+        assert!(
+            cell.modifier.contains(Modifier::DIM),
+            "given indentation is dim"
+        );
+        assert!(find(&buffer, "main.rs   chunk 1 of 4").is_some());
     }
 
     #[test]

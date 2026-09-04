@@ -10,22 +10,38 @@ use super::typing::clock;
 use crate::course::PASS_ERROR_RATE;
 use crate::stats::Summary;
 
-pub fn draw(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    summary: &Summary,
-    finished: bool,
-    is_test: bool,
-    next_label: &str,
-) {
+/// What the results screen says about a session.
+pub struct View<'a> {
+    pub title: &'a str,
+    pub summary: &'a Summary,
+    pub finished: bool,
+    /// "Stage" or "Chunk".
+    pub what: &'a str,
+    /// Test stages get a pass or fail verdict.
+    pub is_test: bool,
+    /// What Enter does next.
+    pub next_label: &'a str,
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
+    let View {
+        title,
+        summary,
+        finished,
+        what,
+        is_test,
+        next_label,
+    } = *view;
     let threshold = PASS_ERROR_RATE;
     let passed = finished && summary.error_rate <= threshold;
     let (headline, color) = match (finished, is_test, passed) {
-        (false, _, _) => ("Stage aborted", Color::Yellow),
-        (true, false, _) => ("Stage complete", Color::Green),
-        (true, true, true) => ("Test passed", Color::Green),
-        (true, true, false) => ("Test complete, but the error rate is too high", Color::Red),
+        (false, _, _) => (format!("{what} aborted"), Color::Yellow),
+        (true, false, _) => (format!("{what} complete"), Color::Green),
+        (true, true, true) => ("Test passed".to_string(), Color::Green),
+        (true, true, false) => (
+            "Test complete, but the error rate is too high".to_string(),
+            Color::Red,
+        ),
     };
     let lines = vec![
         Line::from(title.to_string().bold()),

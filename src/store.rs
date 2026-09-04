@@ -13,7 +13,7 @@ use crate::course::{PASS_ERROR_RATE, Progress};
 use crate::engine::{Keystroke, KeystrokeKind};
 use crate::stats::{self, DayStat, LessonStat, Snapshot, Stroke, Summary};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE session (
@@ -44,6 +44,18 @@ CREATE TABLE keystroke (
 /// Which stage of a lesson a session was, so passing can be derived from test stages.
 const SCHEMA_V2: &str = "ALTER TABLE session ADD COLUMN stage_kind TEXT;";
 
+/// Files: which file a session typed, and where each file resumes.
+const SCHEMA_V3: &str = "
+ALTER TABLE session ADD COLUMN file TEXT;
+CREATE TABLE file_progress (
+    path         TEXT    PRIMARY KEY,
+    content_hash TEXT    NOT NULL,
+    next_chunk   INTEGER NOT NULL,
+    chunks       INTEGER NOT NULL,
+    updated_at   TEXT    NOT NULL
+);
+";
+
 pub struct Store {
     conn: Connection,
 }
@@ -53,6 +65,7 @@ pub struct Store {
 pub struct SessionMeta<'a> {
     pub kind: &'a str,
     pub lesson: Option<&'a str>,
+    pub file: Option<&'a str>,
     pub stage: Option<u32>,
     pub stage_kind: Option<&'a str>,
     pub seed: Option<u64>,
@@ -67,6 +80,7 @@ pub struct SessionRow {
     pub started_at: String,
     pub kind: String,
     pub lesson: Option<String>,
+    pub file: Option<String>,
     pub stage: Option<u32>,
     pub stage_kind: Option<String>,
     pub chars: usize,
@@ -75,6 +89,16 @@ pub struct SessionRow {
     pub cpm: f64,
     pub error_rate: f64,
     pub finished: bool,
+}
+
+/// Where a file resumes. `next_chunk == chunks` means it was typed to the end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileProgress {
+    pub path: String,
+    pub content_hash: String,
+    pub next_chunk: usize,
+    pub chunks: usize,
+    pub updated_at: String,
 }
 
 impl Store {
@@ -96,7 +120,7 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         let store = Self { conn };
-        let migrations = [SCHEMA_V1, SCHEMA_V2];
+        let migrations = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
         let applied = store.schema_version()?.clamp(0, SCHEMA_VERSION) as usize;
         for (index, migration) in migrations.iter().enumerate().skip(applied) {
             store.conn.execute_batch(migration)?;
@@ -128,14 +152,15 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO session
-                (started_at, kind, lesson, stage, stage_kind, seed, chars, errors, active_ms, cpm,
-                 error_rate, finished)
+                (started_at, kind, lesson, file, stage, stage_kind, seed, chars, errors, active_ms,
+                 cpm, error_rate, finished)
              VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                 ?10, ?11, ?12)",
+                 ?10, ?11, ?12, ?13)",
             params![
                 started_at,
                 meta.kind,
                 meta.lesson,
+                meta.file,
                 meta.stage,
                 meta.stage_kind,
                 meta.seed.map(|seed| seed as i64),
@@ -184,6 +209,44 @@ impl Store {
             progress.record(&lesson, best);
         }
         Ok(progress)
+    }
+
+    pub fn file_progress(&self, path: &str) -> Result<Option<FileProgress>> {
+        let mut select = self.conn.prepare(
+            "SELECT path, content_hash, next_chunk, chunks, updated_at FROM file_progress WHERE path = ?1",
+        )?;
+        let mut rows = select.query_map(params![path], file_progress_row)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn set_file_progress(
+        &mut self,
+        path: &str,
+        content_hash: &str,
+        next_chunk: usize,
+        chunks: usize,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO file_progress (path, content_hash, next_chunk, chunks, updated_at)
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+             ON CONFLICT(path) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                next_chunk = excluded.next_chunk,
+                chunks = excluded.chunks,
+                updated_at = excluded.updated_at",
+            params![path, content_hash, next_chunk as i64, chunks as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Most recently practised first.
+    pub fn recent_files(&self, limit: usize) -> Result<Vec<FileProgress>> {
+        let mut select = self.conn.prepare(
+            "SELECT path, content_hash, next_chunk, chunks, updated_at FROM file_progress
+             ORDER BY updated_at DESC, path LIMIT ?1",
+        )?;
+        let rows = select.query_map(params![limit as i64], file_progress_row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Local date of today, from SQLite's clock, `YYYY-MM-DD`.
@@ -274,8 +337,8 @@ impl Store {
     /// Most recent sessions first.
     pub fn recent_sessions(&self, limit: usize) -> Result<Vec<SessionRow>> {
         let mut select = self.conn.prepare(
-            "SELECT id, started_at, kind, lesson, stage, stage_kind, chars, errors, active_ms, cpm,
-                    error_rate, finished
+            "SELECT id, started_at, kind, lesson, file, stage, stage_kind, chars, errors, active_ms,
+                    cpm, error_rate, finished
              FROM session ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = select.query_map(params![limit as i64], |row| {
@@ -284,14 +347,15 @@ impl Store {
                 started_at: row.get(1)?,
                 kind: row.get(2)?,
                 lesson: row.get(3)?,
-                stage: row.get(4)?,
-                stage_kind: row.get(5)?,
-                chars: row.get::<_, i64>(6)? as usize,
-                errors: row.get::<_, i64>(7)? as usize,
-                active_ms: row.get::<_, i64>(8)? as u64,
-                cpm: row.get(9)?,
-                error_rate: row.get(10)?,
-                finished: row.get(11)?,
+                file: row.get(4)?,
+                stage: row.get(5)?,
+                stage_kind: row.get(6)?,
+                chars: row.get::<_, i64>(7)? as usize,
+                errors: row.get::<_, i64>(8)? as usize,
+                active_ms: row.get::<_, i64>(9)? as u64,
+                cpm: row.get(10)?,
+                error_rate: row.get(11)?,
+                finished: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -306,6 +370,16 @@ impl Store {
         )?;
         Ok(count as usize)
     }
+}
+
+fn file_progress_row(row: &rusqlite::Row) -> rusqlite::Result<FileProgress> {
+    Ok(FileProgress {
+        path: row.get(0)?,
+        content_hash: row.get(1)?,
+        next_chunk: row.get::<_, i64>(2)? as usize,
+        chunks: row.get::<_, i64>(3)? as usize,
+        updated_at: row.get(4)?,
+    })
 }
 
 fn kind_from_name(name: &str) -> KeystrokeKind {
@@ -348,6 +422,7 @@ mod tests {
         SessionMeta {
             kind: "lesson",
             lesson: Some("a01"),
+            file: None,
             stage: Some(1),
             stage_kind: Some("intro"),
             seed: Some(42),
@@ -502,6 +577,45 @@ mod tests {
         assert_eq!(snapshot.habit.sessions, 3);
         assert!(snapshot.keys.iter().any(|k| k.key == "n" && k.errors == 3));
         assert_eq!(snapshot.today.len(), 10);
+    }
+
+    #[test]
+    fn file_progress_is_upserted_and_listed_by_recency() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert_eq!(store.file_progress("/a.rs").unwrap(), None);
+        store.set_file_progress("/a.rs", "hash-a", 1, 4).unwrap();
+        store.set_file_progress("/b.rs", "hash-b", 0, 2).unwrap();
+        store.set_file_progress("/a.rs", "hash-a", 2, 4).unwrap();
+        let a = store.file_progress("/a.rs").unwrap().unwrap();
+        assert_eq!(
+            (a.next_chunk, a.chunks, a.content_hash.as_str()),
+            (2, 4, "hash-a")
+        );
+        let recent = store.recent_files(10).unwrap();
+        assert_eq!(
+            recent.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            ["/a.rs", "/b.rs"]
+        );
+        assert_eq!(store.recent_files(1).unwrap().len(), 1);
+        let log = sample_log();
+        let meta = SessionMeta {
+            kind: "file",
+            lesson: None,
+            file: Some("/a.rs"),
+            stage_kind: Some("chunk"),
+            ..sample_meta()
+        };
+        store
+            .record(&meta, &crate::stats::summarize(&log), &log)
+            .unwrap();
+        assert_eq!(
+            store.recent_sessions(1).unwrap()[0].file.as_deref(),
+            Some("/a.rs")
+        );
+        assert!(
+            store.lesson_stats().unwrap().is_empty(),
+            "file sessions are not lessons"
+        );
     }
 
     #[test]

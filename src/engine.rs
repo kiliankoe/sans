@@ -50,6 +50,9 @@ pub struct Keystroke {
 
 pub struct Engine {
     target: Vec<String>,
+    /// Graphemes the engine types by itself: auto-inserted indentation and characters the
+    /// layout cannot produce. Skipped when the cursor reaches them, never logged.
+    given: Vec<bool>,
     /// Index of the next expected grapheme.
     cursor: usize,
     /// The wrong grapheme sitting in the buffer, if any. Correct mode allows at most one.
@@ -60,12 +63,33 @@ pub struct Engine {
 impl Engine {
     pub fn new(text: &str) -> Self {
         let normalised: String = text.nfc().collect();
-        Self {
-            target: normalised.graphemes(true).map(str::to_string).collect(),
+        let target: Vec<String> = normalised.graphemes(true).map(str::to_string).collect();
+        let given = vec![false; target.len()];
+        Self::with_given(target, given)
+    }
+
+    /// `given` marks, per grapheme of `target`, what the engine types by itself.
+    pub fn with_given(target: Vec<String>, mut given: Vec<bool>) -> Self {
+        given.resize(target.len(), false);
+        let mut engine = Self {
+            target,
+            given,
             cursor: 0,
             wrong: None,
             log: Vec::new(),
+        };
+        engine.skip_given();
+        engine
+    }
+
+    fn skip_given(&mut self) {
+        while self.cursor < self.target.len() && self.given[self.cursor] {
+            self.cursor += 1;
         }
+    }
+
+    pub fn is_given(&self, index: usize) -> bool {
+        self.given.get(index).copied().unwrap_or(false)
     }
 
     pub fn target(&self) -> &[String] {
@@ -105,6 +129,7 @@ impl Engine {
         if typed == expected {
             self.record(at, expected, typed, KeystrokeKind::Correct);
             self.cursor += 1;
+            self.skip_given();
             if self.is_finished() {
                 Outcome::Finished
             } else {
@@ -220,6 +245,42 @@ mod tests {
         let mut engine = Engine::new("a\u{308}");
         assert_eq!(engine.target(), ["ä"]);
         assert_eq!(engine.input(ch("ä"), at(0)), Outcome::Finished);
+    }
+
+    fn given_engine(text: &str, given_indices: &[usize]) -> Engine {
+        let target: Vec<String> = text.graphemes(true).map(str::to_string).collect();
+        let given = (0..target.len())
+            .map(|i| given_indices.contains(&i))
+            .collect();
+        Engine::with_given(target, given)
+    }
+
+    #[test]
+    fn given_graphemes_are_skipped_without_keystrokes() {
+        let mut engine = given_engine("  ab\n  c", &[0, 1, 5, 6]);
+        assert_eq!(engine.cursor(), 2, "leading indentation is skipped at once");
+        assert_eq!(engine.input(ch("a"), at(0)), Outcome::Correct);
+        assert_eq!(engine.input(ch("b"), at(10)), Outcome::Correct);
+        assert_eq!(engine.input(Key::Enter, at(20)), Outcome::Correct);
+        assert_eq!(
+            engine.cursor(),
+            7,
+            "the next line's indentation is skipped after Enter"
+        );
+        assert!(engine.is_given(5) && !engine.is_given(7));
+        assert_eq!(engine.input(ch("c"), at(30)), Outcome::Finished);
+        assert_eq!(engine.log().len(), 4);
+    }
+
+    #[test]
+    fn trailing_given_graphemes_finish_the_text() {
+        let mut engine = given_engine("a\u{1F600}", &[1]);
+        assert_eq!(engine.input(ch("a"), at(0)), Outcome::Finished);
+        assert!(engine.is_finished());
+        assert!(
+            given_engine("\u{1F600}", &[0]).is_finished(),
+            "nothing to type at all"
+        );
     }
 
     #[test]

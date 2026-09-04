@@ -294,6 +294,15 @@ fn draw_keys(frame: &mut Frame, area: Rect, snapshot: &Snapshot) {
 }
 
 fn stat_line(name: &str, rate: f64, median_ms: Option<u64>, attempts: u32) -> Line<'static> {
+    let name: String = name
+        .chars()
+        .map(|c| match c {
+            '\n' => '↵',
+            '\t' => '⇥',
+            ' ' => '␣',
+            other => other,
+        })
+        .collect();
     let median = median_ms.map_or("    -".to_string(), |ms| format!("{ms:>4} ms"));
     Line::from(vec![
         Span::styled(

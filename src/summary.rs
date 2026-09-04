@@ -87,20 +87,33 @@ pub fn print_recent(limit: usize, json: bool) -> Result<()> {
 
 fn header() -> String {
     format!(
-        "{:<20} {:<12} {:>5} {:>6} {:>7} {:>5} {}",
+        "{:<20} {:<20} {:>5} {:>6} {:>7} {:>5} {}",
         "started", "lesson", "chars", "errors", "err %", "cpm", "state"
     )
 }
 
 pub fn format_row(session: &SessionRow) -> String {
-    let lesson = match (&session.lesson, &session.stage_kind, session.stage) {
-        (Some(lesson), Some(kind), _) => format!("{lesson}/{kind}"),
-        (Some(lesson), None, Some(stage)) => format!("{lesson}/{stage}"),
-        (Some(lesson), None, None) => lesson.clone(),
-        (None, _, _) => session.kind.clone(),
+    let file_name = |path: &str| {
+        std::path::Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    };
+    let lesson = match (
+        &session.lesson,
+        &session.file,
+        &session.stage_kind,
+        session.stage,
+    ) {
+        (Some(lesson), _, Some(kind), _) => format!("{lesson}/{kind}"),
+        (Some(lesson), _, None, Some(stage)) => format!("{lesson}/{stage}"),
+        (Some(lesson), _, None, None) => lesson.clone(),
+        (None, Some(file), _, Some(stage)) => format!("{}/{stage}", file_name(file)),
+        (None, Some(file), _, None) => file_name(file),
+        (None, None, _, _) => session.kind.clone(),
     };
     format!(
-        "{:<20} {:<12} {:>5} {:>6} {:>6.2}% {:>5.0} {}",
+        "{:<20} {:<20} {:>5} {:>6} {:>6.2}% {:>5.0} {}",
         session.started_at,
         lesson,
         session.chars,
@@ -122,6 +135,7 @@ mod tests {
             started_at: "2026-09-04T18:00:00Z".into(),
             kind: "lesson".into(),
             lesson: Some("a01".into()),
+            file: None,
             stage: Some(2),
             stage_kind: Some("bigrams".into()),
             chars: 150,

@@ -21,15 +21,14 @@ pub struct HintPane {
     pub lines: Vec<String>,
 }
 
-/// Lesson text never exceeds this width; longer lines wrap as a safety net.
-const MAX_WIDTH: u16 = 60;
-
 #[derive(Clone, Copy)]
 enum State {
     Typed,
     Cursor,
     Wrong,
     Pending,
+    /// Typed by the engine itself: indentation, characters the layout cannot produce.
+    Given,
 }
 
 fn style(state: State) -> Style {
@@ -38,6 +37,7 @@ fn style(state: State) -> Style {
         State::Cursor => Style::new().add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
         State::Wrong => Style::new().fg(Color::White).bg(Color::Red),
         State::Pending => Style::new().fg(Color::DarkGray),
+        State::Given => Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
     }
 }
 
@@ -50,6 +50,7 @@ pub fn styled_lines(engine: &Engine) -> Vec<Line<'static>> {
     let mut current = Vec::new();
     for (index, grapheme) in engine.target().iter().enumerate() {
         let state = match index.cmp(&cursor) {
+            _ if engine.is_given(index) => State::Given,
             std::cmp::Ordering::Less => State::Typed,
             std::cmp::Ordering::Equal if wrong.is_some() => State::Wrong,
             std::cmp::Ordering::Equal => State::Cursor,
@@ -92,6 +93,7 @@ pub fn draw(
     engine: &Engine,
     status: &Status,
     hints: Option<&HintPane>,
+    max_width: u16,
 ) {
     let hint_height = hints.map_or(0, |pane| keyboard::HEIGHT + 1 + pane.lines.len() as u16 + 1);
     let [title_area, hint_area, body, status_area] = Layout::vertical([
@@ -115,7 +117,7 @@ pub fn draw(
     frame.render_widget(Paragraph::new(heading), title_area);
 
     let lines = styled_lines(engine);
-    let width = body.width.saturating_sub(2).clamp(1, MAX_WIDTH);
+    let width = body.width.saturating_sub(2).clamp(1, max_width.max(1));
     let height = lines
         .iter()
         .map(|line| (line.width() as u16).div_ceil(width).max(1))

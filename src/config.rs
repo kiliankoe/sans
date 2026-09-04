@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use etcetera::{AppStrategy, AppStrategyArgs, choose_app_strategy};
 use serde::Deserialize;
 
+use crate::text::file::Indent;
+
 fn strategy() -> Result<impl AppStrategy> {
     choose_app_strategy(AppStrategyArgs {
         top_level_domain: "io".into(),
@@ -40,11 +42,32 @@ pub fn config_path() -> Result<PathBuf> {
 pub struct Config {
     /// Practice target per day, shown against today's minutes.
     pub daily_minutes: u32,
+    /// Whether leading whitespace in files is typed or inserted for you.
+    pub indent: IndentSetting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndentSetting {
+    Skip,
+    Type,
+}
+
+impl From<IndentSetting> for Indent {
+    fn from(setting: IndentSetting) -> Self {
+        match setting {
+            IndentSetting::Skip => Indent::Skip,
+            IndentSetting::Type => Indent::Type,
+        }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daily_minutes: 15 }
+        Self {
+            daily_minutes: 15,
+            indent: IndentSetting::Skip,
+        }
     }
 }
 
@@ -77,5 +100,10 @@ mod tests {
             20
         );
         assert!(Config::parse("daily_minute = 20\n").is_err());
+        assert_eq!(
+            Config::parse("indent = \"type\"\n").unwrap().indent,
+            IndentSetting::Type
+        );
+        assert!(Config::parse("indent = \"auto\"\n").is_err());
     }
 }

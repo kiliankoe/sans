@@ -3,6 +3,7 @@
 
 pub mod corpus;
 pub mod drill;
+pub mod file;
 pub mod ngram;
 pub mod words;
 
