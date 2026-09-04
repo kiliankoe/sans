@@ -22,6 +22,7 @@
             rust-analyzer
             clippy
             rustfmt
+            sqlite # inspecting neotype.db
           ];
         };
       });
