@@ -1,0 +1,12 @@
+[package]
+name = "neotype"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Terminal typing tutor for learning the Neo 2 keyboard layout"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
