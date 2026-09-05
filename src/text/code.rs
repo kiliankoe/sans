@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 
-use super::{Corpus, fill};
+use super::{Corpus, Weakness, fill};
 
 /// Share of expression lines taken from the snippet corpus when any fit.
 const SNIPPET_SHARE: f64 = 0.35;
@@ -65,6 +65,7 @@ pub struct Code<'a> {
     pub corpus: &'a Corpus,
     pub charset: &'a HashSet<char>,
     pub new: &'a HashSet<char>,
+    pub weakness: &'a Weakness,
 }
 
 impl Code<'_> {
@@ -122,11 +123,13 @@ impl Code<'_> {
         let weights: Vec<f64> = templates
             .iter()
             .map(|t| {
-                if t.chars().any(|c| self.new.contains(&c)) {
+                let literal = t.replace("%w", "").replace("%n", "");
+                let bonus = if t.chars().any(|c| self.new.contains(&c)) {
                     3.0
                 } else {
                     1.0
-                }
+                };
+                bonus * self.weakness.text(&literal)
             })
             .collect();
         let identifiers: Vec<&str> = self
@@ -237,6 +240,7 @@ mod tests {
             corpus: &corpus,
             charset: &unlocked,
             new: &new,
+            weakness: &Weakness::none(),
         };
         let text = code.tokens(150, &mut rng(1));
         assert_within(&text, &unlocked);
@@ -256,6 +260,7 @@ mod tests {
             corpus: &corpus,
             charset: &all,
             new: &new,
+            weakness: &Weakness::none(),
         };
         assert!(
             code.snippet_lines().len() > 40,
@@ -271,6 +276,7 @@ mod tests {
             corpus: &corpus,
             charset: &few,
             new: &new,
+            weakness: &Weakness::none(),
         };
         let text = code.expressions(200, &mut rng(2));
         assert_within(&text, &few);
@@ -285,6 +291,7 @@ mod tests {
             corpus: &corpus,
             charset: &without,
             new: &without,
+            weakness: &Weakness::none(),
         };
         let text = code.tokens(300, &mut rng(3));
         assert!(!text.chars().any(|c| c.is_ascii_digit()), "{text}");
@@ -294,6 +301,7 @@ mod tests {
             corpus: &corpus,
             charset: &with,
             new: &digits,
+            weakness: &Weakness::none(),
         };
         let text = code.tokens(300, &mut rng(3));
         assert!(text.chars().any(|c| c.is_ascii_digit()), "{text}");

@@ -62,7 +62,7 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
         Line::from(format!("active time  {:>6}", clock(summary.active))),
         Line::from(""),
         Line::styled(
-            format!("Enter: {next_label}    r: repeat    Esc: lessons    q: quit"),
+            format!("Enter: {next_label}    r: repeat    p: practice    Esc: back    q: quit"),
             Style::new().fg(Color::DarkGray),
         ),
     ];

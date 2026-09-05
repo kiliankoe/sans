@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod drill;
 pub mod file;
 pub mod ngram;
+pub mod weak;
 pub mod words;
 
 use std::collections::HashSet;
@@ -14,6 +15,7 @@ use rand::prelude::*;
 
 use crate::course::StageKind;
 pub use corpus::Corpus;
+pub use weak::Weakness;
 
 pub struct StageSpec<'a> {
     pub kind: StageKind,
@@ -23,7 +25,47 @@ pub struct StageSpec<'a> {
     pub unlocked: &'a [String],
     /// Code-flavoured text instead of words.
     pub code: bool,
+    /// What the statistics say is weak; lessons favour it two to one at most.
+    pub weakness: &'a Weakness,
     pub seed: u64,
+}
+
+/// How strongly a lesson stage favours weak keys and bigrams, on top of its new keys.
+pub const LESSON_WEAK_CAP: f64 = 2.0;
+
+/// A practice round over every unlocked key, favouring the weakest keys and bigrams up to
+/// `weak::MAX_FACTOR`. Code text when the weakest key is a symbol, words otherwise.
+pub fn practice(unlocked: &[String], weakness: &Weakness, corpus: &Corpus, seed: u64) -> String {
+    let mut rng = rng(seed);
+    let charset = charset(unlocked);
+    let new = HashSet::new();
+    let target = StageKind::Test.target_len();
+    let is_symbol = |c: char| !c.is_alphanumeric() && !matches!(c, ' ' | ',' | '.' | '-');
+    let symbols_unlocked = charset.iter().any(|&c| is_symbol(c));
+    let weakest_is_symbol = weakness
+        .weakest_keys(1)
+        .first()
+        .is_some_and(|&(c, _)| is_symbol(c));
+    if symbols_unlocked && weakest_is_symbol {
+        let code = code::Code {
+            corpus,
+            charset: &charset,
+            new: &new,
+            weakness,
+        };
+        return code.expressions(target, &mut rng);
+    }
+    words::words(
+        corpus,
+        &charset,
+        &new,
+        1.0,
+        weakness,
+        weak::MAX_FACTOR,
+        target,
+        &mut rng,
+    )
+    .unwrap_or_else(|| ngram::syllables(corpus, &charset, &new, weakness, target, &mut rng))
 }
 
 pub fn generate(spec: &StageSpec, corpus: &Corpus) -> String {
@@ -31,12 +73,14 @@ pub fn generate(spec: &StageSpec, corpus: &Corpus) -> String {
     let unlocked = charset(spec.unlocked);
     let new = charset(spec.new);
     let target = spec.kind.target_len();
-    let syllables = |rng: &mut StdRng| ngram::syllables(corpus, &unlocked, &new, target, rng);
+    let syllables =
+        |rng: &mut StdRng| ngram::syllables(corpus, &unlocked, &new, spec.weakness, target, rng);
     if spec.code && spec.kind != StageKind::Intro {
         let code = code::Code {
             corpus,
             charset: &unlocked,
             new: &new,
+            weakness: spec.weakness,
         };
         return match spec.kind {
             StageKind::Bigrams => code.tokens(target, &mut rng),
@@ -55,10 +99,32 @@ pub fn generate(spec: &StageSpec, corpus: &Corpus) -> String {
             drill::intro(&new_chars, &anchors, target, &mut rng)
         }
         StageKind::Bigrams => syllables(&mut rng),
-        StageKind::Words => words::words(corpus, &unlocked, &new, 3.0, target, &mut rng)
-            .unwrap_or_else(|| syllables(&mut rng)),
-        StageKind::Test => words::words(corpus, &unlocked, &new, 1.5, target, &mut rng)
-            .unwrap_or_else(|| syllables(&mut rng)),
+        StageKind::Words => {
+            words::words(
+                corpus,
+                &unlocked,
+                &new,
+                3.0,
+                spec.weakness,
+                LESSON_WEAK_CAP,
+                target,
+                &mut rng,
+            )
+        }
+        .unwrap_or_else(|| syllables(&mut rng)),
+        StageKind::Test => {
+            words::words(
+                corpus,
+                &unlocked,
+                &new,
+                1.5,
+                spec.weakness,
+                LESSON_WEAK_CAP,
+                target,
+                &mut rng,
+            )
+        }
+        .unwrap_or_else(|| syllables(&mut rng)),
     }
 }
 
@@ -107,6 +173,7 @@ mod tests {
             new: &new,
             unlocked: &unlocked,
             code: false,
+            weakness: &Weakness::none(),
             seed,
         };
         generate(&spec, &Corpus::load())
@@ -120,6 +187,7 @@ mod tests {
             new: &new,
             unlocked: &unlocked,
             code: true,
+            weakness: &Weakness::none(),
             seed,
         };
         generate(&spec, &Corpus::load())
@@ -223,6 +291,64 @@ mod tests {
         assert_within(&text, "enarudtilgchoswkpmzb,.ENARUDTILGCHOSWKPMZB");
         assert!(text.chars().any(|c| c.is_uppercase()), "{text}");
         assert!(text.contains(',') || text.contains('.'), "{text}");
+    }
+
+    fn weak_in(key: &str) -> Weakness {
+        use crate::stats::KeyStat;
+        Weakness::from_stats(
+            &[KeyStat {
+                key: key.into(),
+                attempts: 40,
+                errors: 8,
+                error_rate: 0.2,
+                median_ms: Some(200),
+            }],
+            &[],
+        )
+    }
+
+    #[test]
+    fn weak_keys_show_up_more_often_in_word_stages() {
+        let new = strings("");
+        let unlocked = strings("enarudtilgchoswkpmzb");
+        let corpus = Corpus::load();
+        let count = |weakness: &Weakness| -> usize {
+            (1..=8)
+                .map(|seed| {
+                    let spec = StageSpec {
+                        kind: StageKind::Test,
+                        new: &new,
+                        unlocked: &unlocked,
+                        code: false,
+                        weakness,
+                        seed,
+                    };
+                    generate(&spec, &corpus).matches('z').count()
+                })
+                .sum()
+        };
+        let (weak, plain) = (count(&weak_in("z")), count(&Weakness::none()));
+        assert!(weak > plain, "{weak} vs {plain}");
+    }
+
+    #[test]
+    fn practice_rounds_follow_the_weakest_key() {
+        let corpus = Corpus::load();
+        let letters = strings("enarudtilgchoswkpmzbvfyxjq");
+        let prose = practice(&letters, &weak_in("k"), &corpus, 1);
+        assert_within(&prose, "enarudtilgchoswkpmzbvfyxjq");
+        assert!(prose.chars().count() >= 230, "{prose}");
+        assert!(prose.matches('k').count() > 8, "{prose}");
+        let mut with_symbols = letters.clone();
+        with_symbols.extend(strings("(){}=\""));
+        let code = practice(&with_symbols, &weak_in("{"), &corpus, 1);
+        assert!(code.contains('{') && code.contains('\n'), "{code}");
+        let words_again = practice(&with_symbols, &weak_in("k"), &corpus, 1);
+        assert!(
+            !words_again.contains('('),
+            "letters are weakest, so words: {words_again}"
+        );
+        assert!(!practice(&strings("en"), &Weakness::none(), &corpus, 2).is_empty());
     }
 
     #[test]

@@ -89,7 +89,7 @@ pub fn draw(
 
     frame.render_widget(
         Paragraph::new(Line::styled(
-            "Enter: start    j/k: move    s: stats    q: quit",
+            "Enter: start    j/k: move    p: practice    f: files    s: stats    q: quit",
             Style::new().fg(Color::DarkGray),
         )),
         help_area,

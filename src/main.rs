@@ -27,6 +27,12 @@ struct Cli {
 enum Command {
     /// Type over a file, resuming where you left off
     Type { file: PathBuf },
+    /// A practice round over everything learnt, favouring your weakest keys and bigrams
+    Practice {
+        /// Restrict the round to these keys, for example --keys "uiae nrtd"
+        #[arg(long)]
+        keys: Option<String>,
+    },
     /// Print the generated text of a lesson stage, for tuning the generators
     Text {
         /// Lesson id, for example a08
@@ -62,7 +68,13 @@ fn main() -> Result<()> {
         }) => summary::print_text(&lesson, &stage, seed),
         Some(Command::Stats { limit, json }) => summary::print_recent(limit, json),
         Some(Command::Keys { enhanced }) => keys::run(enhanced),
-        Some(Command::Type { file }) => tui::run(Some(&file)),
-        None => tui::run(None),
+        Some(Command::Type { file }) => tui::run(tui::Start::File(&file)),
+        Some(Command::Practice { keys }) => tui::run(tui::Start::Practice(keys.map(|keys| {
+            keys.chars()
+                .filter(|c| !c.is_whitespace())
+                .map(String::from)
+                .collect()
+        }))),
+        None => tui::run(tui::Start::Home),
     }
 }

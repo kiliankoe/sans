@@ -30,8 +30,15 @@ use crate::text::Corpus;
 /// Redraw interval while idle, so the live cpm and clock keep moving.
 const TICK: Duration = Duration::from_millis(50);
 
-/// Runs the TUI, straight into `file` when one is given.
-pub fn run(file: Option<&Path>) -> Result<()> {
+/// Where the TUI starts.
+pub enum Start<'a> {
+    Home,
+    File(&'a Path),
+    /// A practice round, over the given keys or over everything learnt.
+    Practice(Option<Vec<String>>),
+}
+
+pub fn run(start: Start) -> Result<()> {
     let db = config::db_path()?;
     let mut store = Store::open(&db)?;
     let config = Config::load()?;
@@ -47,11 +54,15 @@ pub fn run(file: Option<&Path>) -> Result<()> {
         recent,
         config.indent.into(),
     );
-    if let Some(path) = file {
-        let session = crate::files::open(path, &store)?;
-        remember(&mut store, &session)?;
-        app.set_files(store.recent_files(App::recent_files_limit())?);
-        app.start_file(session, Instant::now());
+    match start {
+        Start::Home => {}
+        Start::File(path) => {
+            let session = crate::files::open(path, &store)?;
+            remember(&mut store, &session)?;
+            app.set_files(store.recent_files(App::recent_files_limit())?);
+            app.start_file(session, Instant::now());
+        }
+        Start::Practice(restrict) => app.start_practice(restrict),
     }
     ratatui::run(|terminal| {
         execute!(stdout(), EnableBracketedPaste, EnableFocusChange)?;

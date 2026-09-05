@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use rand::prelude::*;
 
-use super::{Corpus, fill};
+use super::{Corpus, Weakness, fill};
 
 /// Bigrams containing a new key are favoured; three-letter forms extend each bigram with
 /// its most frequent neighbour so the transitions get practised in context.
@@ -12,10 +12,17 @@ pub fn syllables(
     corpus: &Corpus,
     charset: &HashSet<char>,
     new: &HashSet<char>,
+    weakness: &Weakness,
     target_len: usize,
     rng: &mut StdRng,
 ) -> String {
-    let bigrams = corpus.bigrams_within(charset);
+    let mut bigrams = corpus.bigrams_within(charset);
+    // Frequency decides, weakness promotes.
+    bigrams.sort_by(|(pair_a, weight_a), (pair_b, weight_b)| {
+        let a = weight_a * weakness.bigram(pair_a.0, pair_a.1);
+        let b = weight_b * weakness.bigram(pair_b.0, pair_b.1);
+        b.total_cmp(&a).then(pair_a.cmp(pair_b))
+    });
     let (with_new, without): (Vec<_>, Vec<_>) = bigrams
         .iter()
         .map(|(pair, _)| *pair)

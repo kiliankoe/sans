@@ -19,12 +19,13 @@ use crate::layout;
 use crate::stats::{self, Snapshot, Summary};
 use crate::store::{FileProgress, SessionMeta};
 use crate::text::file::{self as file_text, Indent};
-use crate::text::{self, Corpus, StageSpec};
+use crate::text::{self, Corpus, StageSpec, Weakness};
 
 const FLASH: Duration = Duration::from_millis(1500);
 /// Lesson text wraps at this width, code gets more room.
 const LESSON_WIDTH: u16 = 60;
 const FILE_WIDTH: u16 = 100;
+const PRACTICE_WIDTH: u16 = 80;
 const RECENT_FILES: usize = 20;
 
 /// What a typing session is about.
@@ -38,6 +39,11 @@ pub enum Source {
     File {
         session: FileSession,
         chunk: usize,
+    },
+    /// A round over every unlocked key (or `restrict`), favouring the weakest.
+    Practice {
+        seed: u64,
+        restrict: Option<Vec<String>>,
     },
 }
 
@@ -210,11 +216,13 @@ impl App {
         let seed: u64 = rand::random();
         let unlocked = self.course.unlocked_through(lesson);
         let definition = &self.course.lessons()[lesson];
+        let weakness = self.weakness();
         let spec = StageSpec {
             kind,
             new: &definition.new,
             unlocked: &unlocked,
             code: definition.code,
+            weakness: &weakness,
             seed,
         };
         let text = text::generate(&spec, &self.corpus);
@@ -225,6 +233,34 @@ impl App {
                 kind,
                 seed,
             },
+            engine: Engine::new(&text),
+            clock: Clock::new(),
+            started_at: None,
+        }));
+    }
+
+    fn weakness(&self) -> Weakness {
+        Weakness::from_stats(&self.snapshot.keys, &self.snapshot.bigrams)
+    }
+
+    /// A practice round over every key unlocked so far, or over `restrict`.
+    pub fn start_practice(&mut self, restrict: Option<Vec<String>>) {
+        let unlocked = match &restrict {
+            Some(keys) => keys.clone(),
+            None => {
+                let next = self.progress.next_index(&self.course);
+                let learnt = self.course.unlocked_before(next);
+                if learnt.is_empty() {
+                    self.course.unlocked_through(0)
+                } else {
+                    learnt
+                }
+            }
+        };
+        let seed: u64 = rand::random();
+        let text = text::practice(&unlocked, &self.weakness(), &self.corpus, seed);
+        self.screen = Screen::Typing(Box::new(Active {
+            source: Source::Practice { seed, restrict },
             engine: Engine::new(&text),
             clock: Clock::new(),
             started_at: None,
@@ -268,6 +304,24 @@ impl App {
                     stage + 1,
                     self.course.stages(*lesson).len()
                 )
+            }
+            Source::Practice { .. } => {
+                let weakness = self.weakness();
+                let mut weakest: Vec<String> = weakness
+                    .weakest_keys(3)
+                    .into_iter()
+                    .map(|(c, f)| format!("{c} {f:.1}x"))
+                    .chain(
+                        weakness
+                            .weakest_bigrams(2)
+                            .into_iter()
+                            .map(|(b, f)| format!("{b} {f:.1}x")),
+                    )
+                    .collect();
+                if weakest.is_empty() {
+                    weakest.push("nothing stands out yet".to_string());
+                }
+                format!("Practice   weakest: {}", weakest.join(", "))
             }
             Source::File { session, chunk } => {
                 let part = &session.chunks[*chunk];
@@ -399,6 +453,7 @@ impl App {
             }
             KeyCode::Char('s') => self.screen = Screen::Stats(StatsView::new()),
             KeyCode::Char('f') => self.screen = Screen::Files { selected: 0 },
+            KeyCode::Char('p') => self.start_practice(None),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             _ => {}
         }
@@ -457,6 +512,9 @@ impl App {
                     .iter()
                     .position(|f| f.path == session.path)
                     .unwrap_or(0),
+            },
+            Source::Practice { .. } => Screen::Home {
+                selected: self.progress.next_index(&self.course),
             },
         };
     }
@@ -534,7 +592,12 @@ impl App {
                         false => self.start_chunk(session, chunk),
                     }
                 }
+                Source::Practice { restrict, .. } => {
+                    let restrict = restrict.clone();
+                    self.start_practice(restrict);
+                }
             },
+            KeyCode::Char('p') => self.start_practice(None),
             KeyCode::Char('r') => match &active.source {
                 Source::Lesson { lesson, stage, .. } => {
                     let (lesson, stage) = (*lesson, *stage);
@@ -543,6 +606,10 @@ impl App {
                 Source::File { session, chunk } => {
                     let (session, chunk) = (session.clone(), *chunk);
                     self.start_chunk(session, chunk);
+                }
+                Source::Practice { restrict, .. } => {
+                    let restrict = restrict.clone();
+                    self.start_practice(restrict);
                 }
             },
             KeyCode::Esc | KeyCode::Char('h') => {
@@ -593,6 +660,19 @@ impl App {
                     file_progress: None,
                 }
             }
+            Source::Practice { seed, .. } => SessionEnd {
+                kind: "practice",
+                lesson: None,
+                file: None,
+                stage: 1,
+                stage_kind: "practice",
+                seed: Some(*seed),
+                started_at,
+                finished,
+                summary: summary.clone(),
+                log,
+                file_progress: None,
+            },
             Source::File { session, chunk } => SessionEnd {
                 kind: "file",
                 lesson: None,
@@ -673,6 +753,7 @@ impl App {
                 let width = match active.source {
                     Source::Lesson { .. } => LESSON_WIDTH,
                     Source::File { .. } => FILE_WIDTH,
+                    Source::Practice { .. } => PRACTICE_WIDTH,
                 };
                 typing::draw(
                     frame,
@@ -708,6 +789,7 @@ impl App {
                         };
                         ("Chunk", false, next)
                     }
+                    Source::Practice { .. } => ("Round", false, "another round"),
                 };
                 let view = results::View {
                     title: &self.title(active),
@@ -829,14 +911,84 @@ mod tests {
                 kind,
                 ..
             } => (*lesson, *stage, *kind),
-            Source::File { .. } => panic!("a file, not a lesson"),
+            Source::File { .. } | Source::Practice { .. } => panic!("not a lesson"),
+        }
+    }
+
+    fn is_practice(app: &App) -> bool {
+        matches!(
+            app.active().map(|a| &a.source),
+            Some(Source::Practice { .. })
+        )
+    }
+
+    #[test]
+    fn practice_rounds_start_from_home_and_from_results_and_repeat() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(ch('p'), t0);
+        assert!(is_practice(&app));
+        assert!(
+            app.title(app.active().unwrap())
+                .starts_with("Practice   weakest: nothing stands out yet")
+        );
+        for grapheme in app.active().unwrap().engine.target() {
+            assert!(
+                ["e", "n", " "].contains(&grapheme.as_str()),
+                "nothing passed yet: {grapheme:?}"
+            );
+        }
+        let end = type_stage(&mut app, t0, None).expect("stored");
+        assert_eq!((end.kind, end.stage_kind), ("practice", "practice"));
+        assert!(end.lesson.is_none() && end.file.is_none() && end.seed.is_some());
+        let first = app.active().unwrap().engine.target().to_vec();
+        let buffer = render(&app);
+        assert!(find(&buffer, "Round complete").is_some());
+        assert!(find(&buffer, "Enter: another round").is_some());
+        app.handle(enter(), t0);
+        assert!(is_practice(&app));
+        assert_ne!(app.active().unwrap().engine.target(), first.as_slice());
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+        app.handle(enter(), t0);
+        app.handle(ch('e'), t0);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(10));
+        app.handle(ch('p'), t0);
+        assert!(is_practice(&app), "p on a results screen starts practice");
+    }
+
+    #[test]
+    fn practice_uses_the_learnt_keys_and_names_the_weak_ones() {
+        use crate::stats::KeyStat;
+        let mut app = app_with_track_a_passed();
+        let mut snapshot = Snapshot::empty("2026-09-05");
+        snapshot.keys.push(KeyStat {
+            key: "k".into(),
+            attempts: 40,
+            errors: 8,
+            error_rate: 0.2,
+            median_ms: Some(300),
+        });
+        app.set_snapshot(snapshot);
+        app.handle(ch('p'), Instant::now());
+        let title = app.title(app.active().unwrap());
+        assert!(title.contains("k 3.0x"), "{title}");
+        let target: String = app.active().unwrap().engine.target().concat();
+        assert!(target.contains('k') && !target.contains('('), "{target}");
+        let mut app = app_with_track_a_passed();
+        app.start_practice(Some(vec!["e".into(), "n".into()]));
+        for grapheme in app.active().unwrap().engine.target() {
+            assert!(
+                ["e", "n", " "].contains(&grapheme.as_str()),
+                "restricted: {grapheme:?}"
+            );
         }
     }
 
     fn chunk_of(app: &App) -> usize {
         match &app.active().expect("a chunk").source {
             Source::File { chunk, .. } => *chunk,
-            Source::Lesson { .. } => panic!("a lesson, not a file"),
+            Source::Lesson { .. } | Source::Practice { .. } => panic!("not a file"),
         }
     }
 

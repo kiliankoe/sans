@@ -6,17 +6,21 @@ use std::collections::{HashSet, VecDeque};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 
-use super::{Corpus, fill};
+use super::{Corpus, Weakness, fill};
 
 /// Fewer candidate words than this and the stage falls back to syllables.
 pub const MIN_WORDS: usize = 12;
 
-/// `new_bonus` multiplies the weight of words containing a new key.
+/// `new_bonus` multiplies the weight of words containing a new key; weak keys and bigrams
+/// multiply it by their factor up to `weak_cap`.
+#[allow(clippy::too_many_arguments)]
 pub fn words(
     corpus: &Corpus,
     charset: &HashSet<char>,
     new: &HashSet<char>,
     new_bonus: f64,
+    weakness: &Weakness,
+    weak_cap: f64,
     target_len: usize,
     rng: &mut StdRng,
 ) -> Option<String> {
@@ -32,7 +36,7 @@ pub fn words(
             } else {
                 1.0
             };
-            word.weight * bonus
+            word.weight * bonus * weakness.text(&word.text).min(weak_cap)
         })
         .collect();
     let dist = WeightedIndex::new(&weights).ok()?;

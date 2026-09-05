@@ -48,6 +48,7 @@ pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
         new: &lesson.new,
         unlocked: &unlocked,
         code: lesson.code,
+        weakness: &text::Weakness::none(),
         seed,
     };
     println!("{}", text::generate(&spec, &Corpus::load()));
