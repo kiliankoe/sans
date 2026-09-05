@@ -67,7 +67,7 @@ pub fn draw(frame: &mut Frame, area: Rect, files: &[FileProgress], selected: usi
     }
     frame.render_widget(
         Paragraph::new(Line::styled(
-            "Enter: continue    j/k: move    Esc: back    q: quit",
+            "Enter: continue    arrows: move    Esc: back    q: quit",
             Style::new().fg(Color::DarkGray),
         )),
         help_area,

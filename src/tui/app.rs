@@ -460,8 +460,8 @@ impl App {
         };
         let last = self.course.lessons().len() - 1;
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => *selected = (*selected + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Down => *selected = (*selected + 1).min(last),
+            KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Enter => {
                 let selected = *selected;
                 if self.progress.available(&self.course, selected) {
@@ -484,8 +484,8 @@ impl App {
         };
         let last = self.files.len().saturating_sub(1);
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => *selected = (*selected + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Down => *selected = (*selected + 1).min(last),
+            KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Enter => {
                 return self
                     .files
@@ -504,8 +504,8 @@ impl App {
             return;
         };
         match key.code {
-            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => view.next_page(),
-            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => view.prev_page(),
+            KeyCode::Tab | KeyCode::Right => view.next_page(),
+            KeyCode::BackTab | KeyCode::Left => view.prev_page(),
             KeyCode::Char('1') => view.range = Range::Days30,
             KeyCode::Char('2') => view.range = Range::Days90,
             KeyCode::Char('3') => view.range = Range::All,
@@ -631,7 +631,7 @@ impl App {
                     self.start_practice(restrict);
                 }
             },
-            KeyCode::Esc | KeyCode::Char('h') => {
+            KeyCode::Esc => {
                 let Screen::Results { active, .. } =
                     std::mem::replace(&mut self.screen, Screen::Home { selected: 0 })
                 else {
@@ -1113,7 +1113,7 @@ mod tests {
         let t0 = Instant::now();
         app.handle(press(KeyCode::Up, KeyModifiers::NONE), t0);
         assert!(matches!(app.screen(), Screen::Home { selected: 0 }));
-        app.handle(ch('j'), t0);
+        app.handle(press(KeyCode::Down, KeyModifiers::NONE), t0);
         assert!(matches!(app.screen(), Screen::Home { selected: 1 }));
         app.handle(enter(), t0);
         assert!(
@@ -1121,7 +1121,7 @@ mod tests {
             "lesson 2 is locked"
         );
         assert!(app.flash_text(t0).is_some());
-        app.handle(ch('k'), t0);
+        app.handle(press(KeyCode::Up, KeyModifiers::NONE), t0);
         app.handle(enter(), t0);
         assert_eq!(stage_of(&app), (0, 0, StageKind::Intro));
     }
@@ -1450,7 +1450,7 @@ mod tests {
         let mut app = app_with_track_a_passed();
         let t0 = Instant::now();
         for _ in 0..11 {
-            app.handle(ch('j'), t0);
+            app.handle(press(KeyCode::Down, KeyModifiers::NONE), t0);
         }
         assert!(matches!(app.screen(), Screen::Home { selected: 33 }));
         app.handle(enter(), t0);
@@ -1486,7 +1486,7 @@ mod tests {
         let mut app = app_with_track_a_passed();
         let buffer = render(&app);
         assert!(find(&buffer, "Track B: symbols (layer 3)").is_some());
-        app.handle(ch('k'), Instant::now());
+        app.handle(press(KeyCode::Up, KeyModifiers::NONE), Instant::now());
         assert!(matches!(app.screen(), Screen::Home { selected: 21 }));
     }
 
