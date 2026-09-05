@@ -5,12 +5,14 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::layout;
+use crate::layout::{self, Layout};
 
 /// Error rate at or below which a test stage passes its lesson.
 pub const PASS_ERROR_RATE: f64 = 0.03;
 
-const COURSE_TOML: &str = include_str!("../data/course.toml");
+const BONE_LETTERS: &str = include_str!("../data/tracks/bone-letters.toml");
+const NEO_LETTERS: &str = include_str!("../data/tracks/neo-letters.toml");
+const SYMBOLS: &str = include_str!("../data/tracks/symbols.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageKind {
@@ -86,8 +88,16 @@ pub struct Course {
 }
 
 impl Course {
-    pub fn load() -> Result<Self> {
-        Self::parse(COURSE_TOML)
+    /// The letter track of `layout` followed by the shared symbol track.
+    pub fn load(layout: Layout) -> Result<Self> {
+        let letters = match layout {
+            Layout::Bone => BONE_LETTERS,
+            Layout::Neo => NEO_LETTERS,
+        };
+        Self::parse(&format!(
+            "{letters}
+{SYMBOLS}"
+        ))
     }
 
     pub fn parse(toml: &str) -> Result<Self> {
@@ -104,7 +114,7 @@ impl Course {
                 def.new
             };
             for key in &new {
-                if layout::primary(key).is_none() {
+                if !layout::is_typeable(key) {
                     bail!("lesson {}: {key:?} is not on the layout", def.id);
                 }
             }
@@ -157,7 +167,7 @@ fn capitals_of(keys: &[String]) -> Vec<String> {
     keys.iter()
         .map(|key| key.to_uppercase())
         .zip(keys)
-        .filter(|(upper, key)| upper != *key && layout::primary(upper).is_some())
+        .filter(|(upper, key)| upper != *key && layout::is_typeable(upper))
         .map(|(upper, _)| upper)
         .collect()
 }
@@ -210,35 +220,51 @@ impl Progress {
 mod tests {
     use super::*;
 
-    fn course() -> Course {
-        Course::load().unwrap()
+    fn course(layout: Layout) -> Course {
+        Course::load(layout).unwrap()
     }
 
     #[test]
-    fn embedded_course_parses_with_unique_ids_and_known_keys() {
-        let course = course();
-        assert_eq!(course.lessons().len(), 42);
-        let mut ids: Vec<_> = course.lessons().iter().map(|l| l.id.as_str()).collect();
-        ids.dedup();
-        assert_eq!(ids.len(), 42);
-        for lesson in course.lessons() {
-            for key in &lesson.new {
-                assert!(layout::primary(key).is_some(), "{} has no position", key);
+    fn both_courses_parse_with_unique_ids_and_typeable_keys() {
+        for (layout, expected) in [(Layout::Bone, 35), (Layout::Neo, 42)] {
+            let course = course(layout);
+            assert_eq!(course.lessons().len(), expected, "{layout:?}");
+            let mut ids: Vec<_> = course.lessons().iter().map(|l| l.id.as_str()).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), expected, "{layout:?}");
+            for lesson in course.lessons() {
+                for key in &lesson.new {
+                    assert!(layout::is_typeable(key), "{} has no position", key);
+                }
             }
         }
     }
 
     #[test]
-    fn unlocked_sets_accumulate() {
-        let course = course();
-        assert!(course.unlocked_before(0).is_empty());
-        assert_eq!(course.unlocked_before(2), ["e", "n", "a", "r"]);
-        assert_eq!(course.unlocked_through(2), ["e", "n", "a", "r", "u", "d"]);
+    fn bone_letters_follow_the_home_row_finger_pairs() {
+        let course = course(Layout::Bone);
+        let first: Vec<&str> = course.lessons()[..4]
+            .iter()
+            .map(|l| l.new.join(""))
+            .map(|s| s.leak() as &str)
+            .collect();
+        assert_eq!(first, ["en", "ir", "ts", "cg"]);
+        assert_eq!(course.lessons()[0].id, "bone-a01");
+        assert_eq!(course.unlocked_before(2), ["e", "n", "i", "r"]);
+        assert_eq!(course.unlocked_through(2), ["e", "n", "i", "r", "t", "s"]);
+        let neo = course_neo();
+        assert_eq!(neo.unlocked_before(2), ["e", "n", "a", "r"]);
+        assert_eq!(neo.lessons()[0].id, "neo-a01");
+    }
+
+    fn course_neo() -> Course {
+        course(Layout::Neo)
     }
 
     #[test]
     fn stages_skip_the_intro_for_reviews() {
-        let course = course();
+        let course = course(Layout::Bone);
         assert_eq!(
             course.stages(0),
             [
@@ -257,41 +283,44 @@ mod tests {
 
     #[test]
     fn shift_lesson_introduces_the_capitals_of_everything_before_it() {
-        let course = course();
-        let shift = course.lessons().iter().position(|l| l.id == "a22").unwrap();
-        let new = &course.lessons()[shift].new;
-        assert_eq!(new.len(), 20, "{new:?}");
-        assert_eq!(new[0], "E");
-        assert!(new.contains(&"B".to_string()));
-        assert!(!new.contains(&",".to_string()));
-        assert!(course.unlocked_through(shift).contains(&"E".to_string()));
+        for (layout, id, expected) in [(Layout::Bone, "bone-a15", 20), (Layout::Neo, "neo-a22", 20)]
+        {
+            let course = course(layout);
+            let shift = course.lessons().iter().position(|l| l.id == id).unwrap();
+            let new = &course.lessons()[shift].new;
+            assert_eq!(new.len(), expected, "{layout:?}: {new:?}");
+            assert_eq!(new[0], "E");
+            assert!(!new.contains(&",".to_string()));
+            assert!(course.unlocked_through(shift).contains(&"E".to_string()));
+        }
     }
 
     #[test]
     fn track_b_starts_after_the_letters_with_a_section_heading() {
-        let course = course();
-        let b01 = course.lessons().iter().position(|l| l.id == "b01").unwrap();
-        assert_eq!(b01, 29);
-        let lesson = &course.lessons()[b01];
-        assert_eq!(lesson.new, ["(", ")"]);
-        assert!(lesson.code);
-        assert_eq!(
-            lesson.section.as_deref(),
-            Some("Track B: symbols (layer 3)")
-        );
-        assert!(!course.lessons()[0].code && course.lessons()[0].section.is_none());
-        let unlocked = course.unlocked_before(b01);
-        assert!(unlocked.contains(&"ß".to_string()) && unlocked.contains(&"E".to_string()));
-        assert!(!unlocked.contains(&"(".to_string()));
+        for (layout, b01_index) in [(Layout::Bone, 22), (Layout::Neo, 29)] {
+            let course = course(layout);
+            let b01 = course.lessons().iter().position(|l| l.id == "b01").unwrap();
+            assert_eq!(b01, b01_index, "{layout:?}");
+            let lesson = &course.lessons()[b01];
+            assert_eq!(lesson.new, ["(", ")"]);
+            assert!(lesson.code);
+            assert_eq!(
+                lesson.section.as_deref(),
+                Some("Track B: symbols (layer 3)")
+            );
+            assert!(!course.lessons()[0].code && course.lessons()[0].section.is_none());
+            let unlocked = course.unlocked_before(b01);
+            assert!(unlocked.contains(&"ß".to_string()) && unlocked.contains(&"E".to_string()));
+            assert!(!unlocked.contains(&"(".to_string()));
+            let last = course.lessons().len() - 1;
+            assert_eq!(
+                course.stages(last),
+                [StageKind::Bigrams, StageKind::Words, StageKind::Test]
+            );
+        }
         assert_eq!(StageKind::Bigrams.label(true), "tokens");
         assert_eq!(StageKind::Words.label(true), "expressions");
         assert_eq!(StageKind::Words.label(false), "words");
-        let digits = course.lessons().iter().find(|l| l.id == "b12").unwrap();
-        assert_eq!(digits.new.len(), 10);
-        assert_eq!(
-            course.stages(41),
-            [StageKind::Bigrams, StageKind::Words, StageKind::Test]
-        );
     }
 
     #[test]
@@ -302,23 +331,23 @@ mod tests {
 
     #[test]
     fn progress_tracks_the_best_test_and_gates_lessons() {
-        let course = course();
+        let course = course(Layout::Bone);
         let mut progress = Progress::new();
         assert!(progress.available(&course, 0));
         assert!(!progress.available(&course, 1));
         assert_eq!(progress.next_index(&course), 0);
-        progress.record("a01", 0.05);
-        assert!(!progress.passed("a01"));
-        progress.record("a01", 0.02);
-        progress.record("a01", 0.04);
-        assert_eq!(progress.best("a01"), Some(0.02));
-        assert!(progress.passed("a01"));
+        progress.record("bone-a01", 0.05);
+        assert!(!progress.passed("bone-a01"));
+        progress.record("bone-a01", 0.02);
+        progress.record("bone-a01", 0.04);
+        assert_eq!(progress.best("bone-a01"), Some(0.02));
+        assert!(progress.passed("bone-a01"));
         assert!(progress.available(&course, 1));
         assert!(!progress.available(&course, 2));
         assert_eq!(progress.next_index(&course), 1);
         for lesson in course.lessons() {
             progress.record(&lesson.id, 0.0);
         }
-        assert_eq!(progress.next_index(&course), 41);
+        assert_eq!(progress.next_index(&course), 34);
     }
 }

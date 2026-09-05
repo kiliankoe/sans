@@ -20,7 +20,7 @@ use crossterm::execute;
 use ratatui::DefaultTerminal;
 
 pub use app::App;
-use app::Effect;
+use app::{Effect, Settings};
 
 use crate::config::{self, Config};
 use crate::course::Course;
@@ -42,18 +42,15 @@ pub fn run(start: Start) -> Result<()> {
     let db = config::db_path()?;
     let mut store = Store::open(&db)?;
     let config = Config::load()?;
-    let course = Course::load()?;
+    let course = Course::load(config.layout)?;
     let progress = store.lesson_progress()?;
     let snapshot = store.snapshot(config.daily_minutes)?;
     let recent = store.recent_files(App::recent_files_limit())?;
-    let mut app = App::new(
-        course,
-        Corpus::load(),
-        progress,
-        snapshot,
-        recent,
-        config.indent.into(),
-    );
+    let settings = Settings {
+        indent: config.indent.into(),
+        layout: config.layout,
+    };
+    let mut app = App::new(course, Corpus::load(), progress, snapshot, recent, settings);
     match start {
         Start::Home => {}
         Start::File(path) => {

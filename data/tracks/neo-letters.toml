@@ -1,0 +1,145 @@
+# Track A for Neo 2: layer 1 letters and Shift. Loaded when `layout = "neo"`.
+#
+# The order follows the KTouch/gtypist Neo course (finger pairs from the home row outward)
+# for the first 17 letters and punctuation, then pulls the remaining ASCII letters forward so
+# English and code words are available early, and leaves the umlauts last. A lesson without
+# `new` keys is a review; `shift = true` makes the new keys the capitals of everything learnt.
+
+[[lesson]]
+id = "neo-a01"
+title = "e and n"
+new = ["e", "n"]
+
+[[lesson]]
+id = "neo-a02"
+title = "a and r"
+new = ["a", "r"]
+
+[[lesson]]
+id = "neo-a03"
+title = "u and d"
+new = ["u", "d"]
+
+[[lesson]]
+id = "neo-a04"
+title = "i and t"
+new = ["i", "t"]
+
+[[lesson]]
+id = "neo-a05"
+title = "Home row check"
+
+[[lesson]]
+id = "neo-a06"
+title = "l"
+new = ["l"]
+
+[[lesson]]
+id = "neo-a07"
+title = "g"
+new = ["g"]
+
+[[lesson]]
+id = "neo-a08"
+title = "c"
+new = ["c"]
+
+[[lesson]]
+id = "neo-a09"
+title = "h"
+new = ["h"]
+
+[[lesson]]
+id = "neo-a10"
+title = "Review"
+
+[[lesson]]
+id = "neo-a11"
+title = "o"
+new = ["o"]
+
+[[lesson]]
+id = "neo-a12"
+title = "s"
+new = ["s"]
+
+[[lesson]]
+id = "neo-a13"
+title = "w"
+new = ["w"]
+
+[[lesson]]
+id = "neo-a14"
+title = "k"
+new = ["k"]
+
+[[lesson]]
+id = "neo-a15"
+title = "Review"
+
+[[lesson]]
+id = "neo-a16"
+title = "p"
+new = ["p"]
+
+[[lesson]]
+id = "neo-a17"
+title = "m"
+new = ["m"]
+
+[[lesson]]
+id = "neo-a18"
+title = "z"
+new = ["z"]
+
+[[lesson]]
+id = "neo-a19"
+title = "b"
+new = ["b"]
+
+[[lesson]]
+id = "neo-a20"
+title = "Review"
+
+[[lesson]]
+id = "neo-a21"
+title = "Comma and full stop"
+new = [",", "."]
+
+[[lesson]]
+id = "neo-a22"
+title = "Capitals"
+shift = true
+
+[[lesson]]
+id = "neo-a23"
+title = "v and f"
+new = ["v", "f"]
+
+[[lesson]]
+id = "neo-a24"
+title = "y and x"
+new = ["y", "x"]
+
+[[lesson]]
+id = "neo-a25"
+title = "j and q"
+new = ["j", "q"]
+
+[[lesson]]
+id = "neo-a26"
+title = "Review"
+
+[[lesson]]
+id = "neo-a27"
+title = "ä, ö and ü"
+new = ["ä", "ö", "ü"]
+
+[[lesson]]
+id = "neo-a28"
+title = "ß and hyphen"
+new = ["ß", "-"]
+
+[[lesson]]
+id = "neo-a29"
+title = "Final review"

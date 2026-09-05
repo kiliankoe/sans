@@ -9,6 +9,7 @@ use ratatui::widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph, Row, T
 
 use super::keyboard;
 use crate::course::Course;
+use crate::layout::Layout as KeyLayout;
 use crate::stats::{self, KeyStat, Snapshot};
 use crate::summary::habit_line;
 
@@ -60,7 +61,14 @@ impl StatsView {
 /// Keys and bigrams need at least this many attempts before they are called weak.
 const MIN_ATTEMPTS: u32 = 10;
 
-pub fn draw(frame: &mut Frame, area: Rect, snapshot: &Snapshot, view: &StatsView, course: &Course) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &Snapshot,
+    view: &StatsView,
+    course: &Course,
+    layout: KeyLayout,
+) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
@@ -76,7 +84,7 @@ pub fn draw(frame: &mut Frame, area: Rect, snapshot: &Snapshot, view: &StatsView
     );
     match view.page {
         Page::Trend => draw_trend(frame, body, snapshot, view.range),
-        Page::Keys => draw_keys(frame, body, snapshot),
+        Page::Keys => draw_keys(frame, body, snapshot, layout),
         Page::Lessons => draw_lessons(frame, body, snapshot, course),
     }
     frame.render_widget(
@@ -229,14 +237,14 @@ fn key_rate(keys: &[KeyStat], label: &str) -> Option<f64> {
     (attempts > 0).then(|| errors as f64 / attempts as f64)
 }
 
-fn draw_keys(frame: &mut Frame, area: Rect, snapshot: &Snapshot) {
+fn draw_keys(frame: &mut Frame, area: Rect, snapshot: &Snapshot, layout: KeyLayout) {
     let [keyboard_area, _, lists] = Layout::vertical([
         Constraint::Length(keyboard::HEIGHT + 1),
         Constraint::Length(1),
         Constraint::Min(1),
     ])
     .areas(area);
-    keyboard::draw_styled(frame, keyboard_area, |label| {
+    keyboard::draw_styled(frame, keyboard_area, layout, |label| {
         match key_rate(&snapshot.keys, label) {
             Some(rate) => Style::new().fg(heat(rate)).add_modifier(Modifier::BOLD),
             None => Style::new().fg(Color::DarkGray),
@@ -382,7 +390,7 @@ mod tests {
             habit: stats::habit(&days, "2026-09-04", 15),
             days,
             lessons: vec![LessonStat {
-                lesson: "a01".into(),
+                lesson: "bone-a01".into(),
                 attempts: 5,
                 tests: 1,
                 best_error_rate: Some(0.012),
@@ -408,9 +416,18 @@ mod tests {
 
     fn render(snapshot: &Snapshot, view: &StatsView) -> String {
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let course = Course::load().unwrap();
+        let course = Course::load(KeyLayout::Bone).unwrap();
         terminal
-            .draw(|frame| draw(frame, frame.area(), snapshot, view, &course))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    frame.area(),
+                    snapshot,
+                    view,
+                    &course,
+                    KeyLayout::Bone,
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
@@ -454,7 +471,7 @@ mod tests {
             text.contains("en   10.0%    280 ms   20 attempts"),
             "{text}"
         );
-        assert!(text.contains(" u  i  a  e  o "), "{text}");
+        assert!(text.contains(" c  t  i  e  o "), "{text}");
     }
 
     #[test]
@@ -468,7 +485,7 @@ mod tests {
         assert!(text.contains("1.2%"), "{text}");
         assert!(text.contains("2026-09-04"), "{text}");
         assert!(
-            text.contains("a and r"),
+            text.contains("i and r"),
             "unstarted lessons are listed too: {text}"
         );
     }

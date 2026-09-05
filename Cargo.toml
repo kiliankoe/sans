@@ -1,9 +1,9 @@
 [package]
-name = "neotype"
+name = "sans"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Terminal typing tutor for learning the Neo 2 keyboard layout"
+description = "Terminal typing tutor for learning the Bone keyboard layout (Neo 2 as well)"
 publish = false
 
 [dependencies]

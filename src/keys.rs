@@ -1,4 +1,4 @@
-//! `neotype keys`: print every terminal event as crossterm decodes it.
+//! `sans keys`: print every terminal event as crossterm decodes it.
 //!
 //! This exists to answer setup questions the app cannot answer on its own: do Neo's layer 3
 //! symbols arrive as plain characters, are umlauts precomposed, does the terminal treat

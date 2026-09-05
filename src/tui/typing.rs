@@ -12,10 +12,12 @@ use ratatui::widgets::{Paragraph, Wrap};
 use super::app::Status;
 use super::keyboard;
 use crate::engine::Engine;
+use crate::layout::Layout as KeyLayout;
 
 /// What an intro stage shows above the text: the keyboard with the new keys lit and one
 /// hint line per key.
 pub struct HintPane {
+    pub layout: KeyLayout,
     /// Which layer's labels the keyboard shows: 1 for letters and capitals, 3 for symbols.
     pub layer: u8,
     pub highlight: HashSet<String>,
@@ -150,9 +152,15 @@ fn draw_hints(frame: &mut Frame, area: Rect, pane: &HintPane) {
     ])
     .areas(block);
     if pane.layer == 1 {
-        keyboard::draw(frame, keyboard_area, &pane.highlight, &pane.unlocked);
+        keyboard::draw(
+            frame,
+            keyboard_area,
+            pane.layout,
+            &pane.highlight,
+            &pane.unlocked,
+        );
     } else {
-        keyboard::draw_layer(frame, keyboard_area, pane.layer, |label| {
+        keyboard::draw_layer(frame, keyboard_area, pane.layout, pane.layer, |label| {
             if pane.highlight.contains(label) {
                 Style::new()
                     .fg(Color::Black)

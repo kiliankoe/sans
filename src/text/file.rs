@@ -86,7 +86,7 @@ pub fn prepare(chunk: &Chunk, indent: Indent) -> Prepared {
         for grapheme in line.graphemes(true) {
             let whitespace = grapheme == " " || grapheme == "\t";
             in_indent &= whitespace;
-            let unsupported = grapheme != "\t" && layout::positions(grapheme).is_empty();
+            let unsupported = grapheme != "\t" && !layout::is_typeable(grapheme);
             given.push((in_indent && indent == Indent::Skip) || unsupported);
             target.push(grapheme.to_string());
         }

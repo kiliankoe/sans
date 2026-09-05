@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::course::{Course, Progress};
+use crate::layout::Layout as KeyLayout;
 use crate::stats::Habit;
 use crate::summary::habit_line;
 
@@ -17,6 +18,7 @@ pub fn draw(
     progress: &Progress,
     habit: &Habit,
     selected: usize,
+    layout: KeyLayout,
 ) {
     let [title_area, list_area, help_area] = Layout::vertical([
         Constraint::Length(3),
@@ -31,7 +33,7 @@ pub fn draw(
         .count();
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from("neotype".bold()),
+            Line::from(vec!["sans".bold(), format!("   {}", layout.name()).into()]),
             Line::from(format!(
                 "Track A, letters: {passed} of {} lessons passed",
                 course.lessons().len()

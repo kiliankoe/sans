@@ -1,0 +1,111 @@
+# Track A for Bone: layer 1 letters and Shift. Loaded when `layout = "bone"`, the default.
+#
+# The same logic as the KTouch Neo course applied to Bone's home row: finger pairs from the
+# index fingers outward, then the stretch keys, then the top row by finger pair, then
+# punctuation and Shift, the bottom row, and the umlauts last. A lesson without `new` keys
+# is a review; `shift = true` makes the new keys the capitals of everything learnt.
+
+[[lesson]]
+id = "bone-a01"
+title = "e and n"
+new = ["e", "n"]
+
+[[lesson]]
+id = "bone-a02"
+title = "i and r"
+new = ["i", "r"]
+
+[[lesson]]
+id = "bone-a03"
+title = "t and s"
+new = ["t", "s"]
+
+[[lesson]]
+id = "bone-a04"
+title = "c and g"
+new = ["c", "g"]
+
+[[lesson]]
+id = "bone-a05"
+title = "Home row check"
+
+[[lesson]]
+id = "bone-a06"
+title = "o and b"
+new = ["o", "b"]
+
+[[lesson]]
+id = "bone-a07"
+title = "a and h"
+new = ["a", "h"]
+
+[[lesson]]
+id = "bone-a08"
+title = "u and l"
+new = ["u", "l"]
+
+[[lesson]]
+id = "bone-a09"
+title = "Review"
+
+[[lesson]]
+id = "bone-a10"
+title = "d and m"
+new = ["d", "m"]
+
+[[lesson]]
+id = "bone-a11"
+title = "p and x"
+new = ["p", "x"]
+
+[[lesson]]
+id = "bone-a12"
+title = "w and k"
+new = ["w", "k"]
+
+[[lesson]]
+id = "bone-a13"
+title = "Review"
+
+[[lesson]]
+id = "bone-a14"
+title = "Comma and full stop"
+new = [",", "."]
+
+[[lesson]]
+id = "bone-a15"
+title = "Capitals"
+shift = true
+
+[[lesson]]
+id = "bone-a16"
+title = "z and y"
+new = ["z", "y"]
+
+[[lesson]]
+id = "bone-a17"
+title = "f and v"
+new = ["f", "v"]
+
+[[lesson]]
+id = "bone-a18"
+title = "Review"
+
+[[lesson]]
+id = "bone-a19"
+title = "ü, ä and ö"
+new = ["ü", "ä", "ö"]
+
+[[lesson]]
+id = "bone-a20"
+title = "j and q"
+new = ["j", "q"]
+
+[[lesson]]
+id = "bone-a21"
+title = "ß and hyphen"
+new = ["ß", "-"]
+
+[[lesson]]
+id = "bone-a22"
+title = "Final review"

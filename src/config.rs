@@ -9,30 +9,31 @@ use anyhow::{Context, Result};
 use etcetera::{AppStrategy, AppStrategyArgs, choose_app_strategy};
 use serde::Deserialize;
 
+use crate::layout::Layout;
 use crate::text::file::Indent;
 
 fn strategy() -> Result<impl AppStrategy> {
     choose_app_strategy(AppStrategyArgs {
         top_level_domain: "io".into(),
         author: "kilian".into(),
-        app_name: "neotype".into(),
+        app_name: "sans".into(),
     })
     .context("no home directory")
 }
 
-/// `$NEOTYPE_DATA_DIR`, else `~/.local/share/neotype` (honouring `$XDG_DATA_HOME`).
+/// `$SANS_DATA_DIR`, else `~/.local/share/sans` (honouring `$XDG_DATA_HOME`).
 pub fn data_dir() -> Result<PathBuf> {
-    if let Some(dir) = env::var_os("NEOTYPE_DATA_DIR") {
+    if let Some(dir) = env::var_os("SANS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     Ok(strategy()?.data_dir())
 }
 
 pub fn db_path() -> Result<PathBuf> {
-    Ok(data_dir()?.join("neotype.db"))
+    Ok(data_dir()?.join("sans.db"))
 }
 
-/// `~/.config/neotype/config.toml` (honouring `$XDG_CONFIG_HOME`).
+/// `~/.config/sans/config.toml` (honouring `$XDG_CONFIG_HOME`).
 pub fn config_path() -> Result<PathBuf> {
     Ok(strategy()?.config_dir().join("config.toml"))
 }
@@ -44,6 +45,8 @@ pub struct Config {
     pub daily_minutes: u32,
     /// Whether leading whitespace in files is typed or inserted for you.
     pub indent: IndentSetting,
+    /// Which member of the Neo family is active on the system: `bone` or `neo`.
+    pub layout: Layout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -67,6 +70,7 @@ impl Default for Config {
         Self {
             daily_minutes: 15,
             indent: IndentSetting::Skip,
+            layout: Layout::Bone,
         }
     }
 }
@@ -105,5 +109,11 @@ mod tests {
             IndentSetting::Type
         );
         assert!(Config::parse("indent = \"auto\"\n").is_err());
+        assert_eq!(Config::parse("").unwrap().layout, Layout::Bone);
+        assert_eq!(
+            Config::parse("layout = \"neo\"\n").unwrap().layout,
+            Layout::Neo
+        );
+        assert!(Config::parse("layout = \"qwertz\"\n").is_err());
     }
 }

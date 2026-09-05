@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::layout;
+use crate::layout::{self, Layout as KeyLayout};
 
 /// Rough physical stagger of the four rows, in cells, with three cells per key.
 const STAGGER: [usize; 4] = [0, 2, 3, 4];
@@ -20,6 +20,7 @@ pub const WIDTH: u16 = 13 * 3 + 4;
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
+    layout: KeyLayout,
     highlight: &HashSet<String>,
     unlocked: &HashSet<String>,
 ) {
@@ -27,7 +28,7 @@ pub fn draw(
         set.iter().map(|k| k.to_lowercase()).collect()
     };
     let (highlight, unlocked) = (lower(highlight), lower(unlocked));
-    draw_styled(frame, area, |label| {
+    draw_styled(frame, area, layout, |label| {
         if highlight.contains(label) {
             Style::new()
                 .fg(Color::Black)
@@ -42,13 +43,24 @@ pub fn draw(
 }
 
 /// The keyboard with one style per key label, for heatmaps.
-pub fn draw_styled(frame: &mut Frame, area: Rect, style_of: impl Fn(&str) -> Style) {
-    draw_layer(frame, area, 1, style_of);
+pub fn draw_styled(
+    frame: &mut Frame,
+    area: Rect,
+    layout: KeyLayout,
+    style_of: impl Fn(&str) -> Style,
+) {
+    draw_layer(frame, area, layout, 1, style_of);
 }
 
 /// The keyboard showing the labels of `layer` (1 to 3), one style per label.
-pub fn draw_layer(frame: &mut Frame, area: Rect, layer: u8, style_of: impl Fn(&str) -> Style) {
-    for (index, row) in layout::layer_rows(layer).iter().enumerate() {
+pub fn draw_layer(
+    frame: &mut Frame,
+    area: Rect,
+    layout: KeyLayout,
+    layer: u8,
+    style_of: impl Fn(&str) -> Style,
+) {
+    for (index, row) in layout::layer_rows(layout, layer).iter().enumerate() {
         let y = area.y + index as u16;
         if y >= area.bottom() {
             break;
@@ -91,7 +103,7 @@ mod tests {
         let highlight: HashSet<String> = ["E".to_string()].into();
         let unlocked: HashSet<String> = ["e".to_string(), "n".to_string()].into();
         terminal
-            .draw(|frame| draw(frame, frame.area(), &highlight, &unlocked))
+            .draw(|frame| draw(frame, frame.area(), KeyLayout::Bone, &highlight, &unlocked))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let find = |needle: char| {
@@ -102,6 +114,6 @@ mod tests {
         };
         assert_eq!(buffer.cell(find('e')).unwrap().bg, Color::Yellow);
         assert_eq!(buffer.cell(find('n')).unwrap().fg, Color::Reset);
-        assert_eq!(buffer.cell(find('a')).unwrap().fg, Color::DarkGray);
+        assert_eq!(buffer.cell(find('c')).unwrap().fg, Color::DarkGray);
     }
 }

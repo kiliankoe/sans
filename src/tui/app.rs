@@ -15,10 +15,26 @@ use crate::clock::Clock;
 use crate::course::{Course, PASS_ERROR_RATE, Progress, StageKind};
 use crate::engine::{Engine, Key, Keystroke, Outcome};
 use crate::files::FileSession;
-use crate::layout;
+use crate::layout::{self, Layout};
 use crate::stats::{self, Snapshot, Summary};
 use crate::store::{FileProgress, SessionMeta};
 use crate::text::file::{self as file_text, Indent};
+
+/// Settings the app needs from the config file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settings {
+    pub indent: Indent,
+    pub layout: Layout,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            indent: Indent::Skip,
+            layout: Layout::Bone,
+        }
+    }
+}
 use crate::text::{self, Corpus, StageSpec, Weakness};
 
 const FLASH: Duration = Duration::from_millis(1500);
@@ -134,7 +150,7 @@ pub struct App {
     progress: Progress,
     snapshot: Snapshot,
     files: Vec<FileProgress>,
-    indent: Indent,
+    settings: Settings,
     screen: Screen,
     flash: Option<(String, Instant)>,
     quit: bool,
@@ -147,7 +163,7 @@ impl App {
         progress: Progress,
         snapshot: Snapshot,
         files: Vec<FileProgress>,
-        indent: Indent,
+        settings: Settings,
     ) -> Self {
         let selected = progress.next_index(&course);
         Self {
@@ -156,7 +172,7 @@ impl App {
             progress,
             snapshot,
             files,
-            indent,
+            settings,
             screen: Screen::Home { selected },
             flash: None,
             quit: false,
@@ -277,7 +293,7 @@ impl App {
     }
 
     fn start_chunk(&mut self, session: FileSession, chunk: usize) {
-        let prepared = file_text::prepare(&session.chunks[chunk], self.indent);
+        let prepared = file_text::prepare(&session.chunks[chunk], self.settings.indent);
         self.screen = Screen::Typing(Box::new(Active {
             source: Source::File { session, chunk },
             engine: Engine::with_given(prepared.target, prepared.given),
@@ -364,11 +380,13 @@ impl App {
                     .to_string(),
             ]
         } else {
-            new.iter().filter_map(|key| layout::hint(key)).collect()
+            new.iter()
+                .filter_map(|key| layout::hint(self.settings.layout, key))
+                .collect()
         };
         let layer = match new
             .iter()
-            .filter_map(|key| layout::primary(key))
+            .filter_map(|key| layout::primary(self.settings.layout, key))
             .map(|p| p.layer)
             .max()
         {
@@ -376,6 +394,7 @@ impl App {
             _ => 1,
         };
         Some(HintPane {
+            layout: self.settings.layout,
             layer,
             highlight: new.iter().cloned().collect::<HashSet<_>>(),
             unlocked: self.course.unlocked_through(*lesson).into_iter().collect(),
@@ -734,6 +753,7 @@ impl App {
                     &self.progress,
                     &self.snapshot.habit,
                     *selected,
+                    self.settings.layout,
                 );
                 if let Some(message) = self.flash_text(now) {
                     typing::draw_flash(frame, area, &message);
@@ -745,9 +765,14 @@ impl App {
                     typing::draw_flash(frame, area, &message);
                 }
             }
-            Screen::Stats(view) => {
-                stats_screen::draw(frame, area, &self.snapshot, view, &self.course)
-            }
+            Screen::Stats(view) => stats_screen::draw(
+                frame,
+                area,
+                &self.snapshot,
+                view,
+                &self.course,
+                self.settings.layout,
+            ),
             Screen::Typing(active) => {
                 let hints = self.hint_pane(active);
                 let width = match active.source {
@@ -840,12 +865,12 @@ mod tests {
 
     fn app() -> App {
         App::new(
-            Course::load().unwrap(),
+            Course::load(Layout::Bone).unwrap(),
             Corpus::load(),
             Progress::new(),
             Snapshot::empty("2026-09-04"),
             Vec::new(),
-            Indent::Skip,
+            Settings::default(),
         )
     }
 
@@ -1048,14 +1073,14 @@ mod tests {
         let app = app();
         assert!(matches!(app.screen(), Screen::Home { selected: 0 }));
         let mut progress = Progress::new();
-        progress.record("a01", 0.01);
+        progress.record("bone-a01", 0.01);
         let app = App::new(
-            Course::load().unwrap(),
+            Course::load(Layout::Bone).unwrap(),
             Corpus::load(),
             progress,
             Snapshot::empty("2026-09-04"),
             Vec::new(),
-            Indent::Skip,
+            Settings::default(),
         );
         assert!(matches!(app.screen(), Screen::Home { selected: 1 }));
     }
@@ -1143,7 +1168,7 @@ mod tests {
         );
         let end = type_stage(&mut app, t0, None).unwrap();
         assert_eq!(end.summary.errors, 0);
-        assert!(app.progress().passed("a01"));
+        assert!(app.progress().passed("bone-a01"));
         app.handle(enter(), t0);
         assert_eq!(
             stage_of(&app),
@@ -1171,8 +1196,11 @@ mod tests {
         let first_text = app.active().unwrap().engine.target().to_vec();
         let end = type_stage(&mut app, t0, Some(10)).unwrap();
         assert!(end.summary.error_rate > PASS_ERROR_RATE);
-        assert!(!app.progress().passed("a01"));
-        assert_eq!(app.progress().best("a01"), Some(end.summary.error_rate));
+        assert!(!app.progress().passed("bone-a01"));
+        assert_eq!(
+            app.progress().best("bone-a01"),
+            Some(end.summary.error_rate)
+        );
         app.handle(enter(), t0);
         assert_eq!(stage_of(&app), (0, 3, StageKind::Test));
         assert_ne!(app.active().unwrap().engine.target(), first_text.as_slice());
@@ -1326,7 +1354,8 @@ mod tests {
         assert!(find(&buffer, "e and n").is_some());
         assert!(find(&buffer, "next").is_some());
         assert!(find(&buffer, "locked").is_some());
-        assert!(find(&buffer, "0 of 42 lessons passed").is_some());
+        assert!(find(&buffer, "0 of 35 lessons passed").is_some());
+        assert!(find(&buffer, "sans   Bone").is_some());
     }
 
     #[test]
@@ -1337,10 +1366,10 @@ mod tests {
         app.handle(ch('e'), t0);
         app.handle(ch('x'), t0 + ms(10));
         let buffer = render(&app);
-        assert!(find(&buffer, "Lesson 1 of 42: e and n").is_some());
+        assert!(find(&buffer, "Lesson 1 of 35: e and n").is_some());
         assert!(find(&buffer, "left index finger, home row").is_some());
         assert!(
-            find(&buffer, " u  i  a  e  o ").is_some(),
+            find(&buffer, " c  t  i  e  o ").is_some(),
             "keyboard home row"
         );
         let (x, y) = find(&buffer, "exe").expect("typed e then wrong x");
@@ -1364,7 +1393,7 @@ mod tests {
     }
 
     fn app_with_track_a_passed() -> App {
-        let course = Course::load().unwrap();
+        let course = Course::load(Layout::Bone).unwrap();
         let mut progress = Progress::new();
         for lesson in course.lessons().iter().filter(|l| !l.code) {
             progress.record(&lesson.id, 0.0);
@@ -1375,7 +1404,7 @@ mod tests {
             progress,
             Snapshot::empty("2026-09-05"),
             Vec::new(),
-            Indent::Skip,
+            Settings::default(),
         )
     }
 
@@ -1384,7 +1413,7 @@ mod tests {
         let mut app = app_with_track_a_passed();
         let t0 = Instant::now();
         assert!(
-            matches!(app.screen(), Screen::Home { selected: 29 }),
+            matches!(app.screen(), Screen::Home { selected: 22 }),
             "track B is next"
         );
         app.handle(enter(), t0);
@@ -1398,7 +1427,7 @@ mod tests {
             hints.lines
         );
         let buffer = render(&app);
-        assert!(find(&buffer, "Lesson 30 of 42: Parentheses   intro (1/4)").is_some());
+        assert!(find(&buffer, "Lesson 23 of 35: Parentheses   intro (1/4)").is_some());
         assert!(
             find(&buffer, " \\  /  {  }  *  ?  (  )  -  :  @ ").is_some(),
             "layer 3 home row"
@@ -1423,15 +1452,15 @@ mod tests {
         for _ in 0..11 {
             app.handle(ch('j'), t0);
         }
-        assert!(matches!(app.screen(), Screen::Home { selected: 40 }));
+        assert!(matches!(app.screen(), Screen::Home { selected: 33 }));
         app.handle(enter(), t0);
         assert!(
             matches!(app.screen(), Screen::Home { .. }),
             "b12 is locked until b11 passes"
         );
-        let course = Course::load().unwrap();
+        let course = Course::load(Layout::Bone).unwrap();
         let mut progress = Progress::new();
-        for lesson in course.lessons().iter().take(40) {
+        for lesson in course.lessons().iter().take(33) {
             progress.record(&lesson.id, 0.0);
         }
         let mut app = App::new(
@@ -1440,7 +1469,7 @@ mod tests {
             progress,
             Snapshot::empty("2026-09-05"),
             Vec::new(),
-            Indent::Skip,
+            Settings::default(),
         );
         app.handle(enter(), t0);
         let hints = app.hint_pane(app.active().unwrap()).unwrap();
@@ -1458,7 +1487,7 @@ mod tests {
         let buffer = render(&app);
         assert!(find(&buffer, "Track B: symbols (layer 3)").is_some());
         app.handle(ch('k'), Instant::now());
-        assert!(matches!(app.screen(), Screen::Home { selected: 28 }));
+        assert!(matches!(app.screen(), Screen::Home { selected: 21 }));
     }
 
     #[test]

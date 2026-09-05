@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn a_version_one_database_is_migrated() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("neotype.db");
+        let path = dir.path().join("sans.db");
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA_V1).unwrap();
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn opens_a_file_creating_parent_directories_and_reopens_it() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("neotype.db");
+        let path = dir.path().join("nested").join("sans.db");
         {
             let mut store = Store::open(&path).unwrap();
             let log = sample_log();

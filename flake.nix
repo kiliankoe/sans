@@ -1,5 +1,5 @@
 {
-  description = "neotype, a terminal typing tutor for learning the Neo 2 keyboard layout";
+  description = "sans, a terminal typing tutor for learning the Bone keyboard layout";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -22,20 +22,20 @@
             rust-analyzer
             clippy
             rustfmt
-            sqlite # inspecting neotype.db
+            sqlite # inspecting sans.db
           ];
         };
       });
 
       packages = forAllSystems (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
-          pname = "neotype";
+          pname = "sans";
           version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
           meta = {
-            description = "Terminal typing tutor for learning the Neo 2 keyboard layout";
-            mainProgram = "neotype";
+            description = "Terminal typing tutor for learning the Bone keyboard layout (Neo 2 as well)";
+            mainProgram = "sans";
           };
         };
       });

@@ -28,7 +28,7 @@ pub fn draw(frame: &mut Frame, area: Rect, files: &[FileProgress], selected: usi
         Paragraph::new(vec![
             Line::from("Files".bold()),
             Line::styled(
-                "Type over your own files, source code first of all. Add one with `neotype type path/to/file`.",
+                "Type over your own files, source code first of all. Add one with `sans type path/to/file`.",
                 Style::new().fg(Color::DarkGray),
             ),
         ]),

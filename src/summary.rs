@@ -1,4 +1,4 @@
-//! `neotype stats`: the plain-text view of what is stored. The charts come in phase 3.
+//! `sans stats`: the plain-text view of what is stored. The charts come in phase 3.
 
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -25,9 +25,9 @@ pub fn habit_line(habit: &Habit) -> String {
     )
 }
 
-/// `neotype text`: what a stage would look like, without typing it.
+/// `sans text`: what a stage would look like, without typing it.
 pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
-    let course = Course::load()?;
+    let course = Course::load(Config::load()?.layout)?;
     let Some(index) = course.lessons().iter().position(|l| l.id == lesson) else {
         bail!(
             "no lesson {lesson}; ids run a01 to a{:02}",
