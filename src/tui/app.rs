@@ -38,6 +38,8 @@ impl Default for Settings {
 use crate::text::{self, Corpus, StageSpec, Weakness};
 
 const FLASH: Duration = Duration::from_millis(1500);
+/// How long a first Esc stays armed, waiting for the second one that aborts.
+const ABORT_CONFIRM: Duration = Duration::from_secs(2);
 /// Lesson text wraps at this width, code gets more room.
 const LESSON_WIDTH: u16 = 60;
 const FILE_WIDTH: u16 = 100;
@@ -69,6 +71,8 @@ pub struct Active {
     pub engine: Engine,
     clock: Clock,
     started_at: Option<SystemTime>,
+    /// When Esc was pressed without a second press following it yet.
+    abort_asked_at: Option<Instant>,
 }
 
 pub enum Screen {
@@ -252,6 +256,7 @@ impl App {
             engine: Engine::new(&text),
             clock: Clock::new(),
             started_at: None,
+            abort_asked_at: None,
         }));
     }
 
@@ -280,6 +285,7 @@ impl App {
             engine: Engine::new(&text),
             clock: Clock::new(),
             started_at: None,
+            abort_asked_at: None,
         }));
     }
 
@@ -299,6 +305,7 @@ impl App {
             engine: Engine::with_given(prepared.target, prepared.given),
             clock: Clock::new(),
             started_at: None,
+            abort_asked_at: None,
         }));
     }
 
@@ -473,7 +480,7 @@ impl App {
             KeyCode::Char('s') => self.screen = Screen::Stats(StatsView::new()),
             KeyCode::Char('f') => self.screen = Screen::Files { selected: 0 },
             KeyCode::Char('p') => self.start_practice(None),
-            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
     }
@@ -543,6 +550,12 @@ impl App {
             return None;
         };
         if key.code == KeyCode::Esc {
+            // Aborting takes two presses, so one stray Esc never throws a session away.
+            let asked_at = active.abort_asked_at.take();
+            if !asked_at.is_some_and(|at| now.duration_since(at) < ABORT_CONFIRM) {
+                active.abort_asked_at = Some(now);
+                return None;
+            }
             if active.engine.log().is_empty() {
                 let Screen::Typing(active) =
                     std::mem::replace(&mut self.screen, Screen::Home { selected: 0 })
@@ -554,6 +567,7 @@ impl App {
             }
             return self.finish(false);
         }
+        active.abort_asked_at = None;
         let input = key_to_input(&key)?;
         if !active.clock.started() {
             active.clock.start(now);
@@ -719,6 +733,19 @@ impl App {
         (!end.log.is_empty() || end.file_progress.is_some()).then_some(end)
     }
 
+    /// The pending abort question, which outranks any other status message.
+    fn abort_question(active: &Active, now: Instant) -> Option<String> {
+        let what = match active.source {
+            Source::Lesson { .. } => "lesson",
+            Source::File { .. } => "chunk",
+            Source::Practice { .. } => "round",
+        };
+        active
+            .abort_asked_at
+            .filter(|at| now.duration_since(*at) < ABORT_CONFIRM)
+            .map(|_| format!("abort this {what}? press Esc again to confirm"))
+    }
+
     fn flash_text(&self, now: Instant) -> Option<String> {
         self.flash
             .as_ref()
@@ -738,7 +765,7 @@ impl App {
             total: active.engine.target().len(),
             active: elapsed,
             paused: active.clock.is_paused(),
-            flash: self.flash_text(now),
+            flash: Self::abort_question(active, now).or_else(|| self.flash_text(now)),
         }
     }
 
@@ -890,6 +917,12 @@ mod tests {
         Duration::from_millis(n)
     }
 
+    /// The two Esc presses that abort an active session.
+    fn abort(app: &mut App, at: Instant) -> Option<Effect> {
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), at);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), at + ms(10))
+    }
+
     fn stored(effect: Option<Effect>) -> Option<SessionEnd> {
         match effect {
             Some(Effect::Store(end)) => Some(*end),
@@ -973,11 +1006,11 @@ mod tests {
         app.handle(enter(), t0);
         assert!(is_practice(&app));
         assert_ne!(app.active().unwrap().engine.target(), first.as_slice());
-        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        abort(&mut app, t0);
         assert!(matches!(app.screen(), Screen::Home { .. }));
         app.handle(enter(), t0);
         app.handle(ch('e'), t0);
-        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(10));
+        abort(&mut app, t0 + ms(10));
         app.handle(ch('p'), t0);
         assert!(is_practice(&app), "p on a results screen starts practice");
     }
@@ -1182,7 +1215,7 @@ mod tests {
         let mut app = app();
         let t0 = Instant::now();
         app.handle(enter(), t0);
-        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        abort(&mut app, t0);
         assert!(
             matches!(app.screen(), Screen::Home { .. }),
             "Esc before typing goes home"
@@ -1212,8 +1245,7 @@ mod tests {
         let t0 = Instant::now();
         app.handle(enter(), t0);
         app.handle(ch('e'), t0);
-        let end = stored(app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(100)))
-            .expect("stored");
+        let end = stored(abort(&mut app, t0 + ms(100))).expect("stored");
         assert!(!end.finished);
         assert!(matches!(
             app.screen(),
@@ -1279,8 +1311,7 @@ mod tests {
         app.handle(enter(), t0);
         assert_eq!(chunk_of(&app), 1);
         app.handle(ch('f'), t0);
-        let end = stored(app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0))
-            .expect("aborted chunk stored");
+        let end = stored(abort(&mut app, t0)).expect("aborted chunk stored");
         assert!(!end.finished && end.file_progress.is_none());
         app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
         assert!(
@@ -1330,11 +1361,69 @@ mod tests {
         assert!(matches!(app.screen(), Screen::Home { .. }));
     }
 
+    #[test]
+    fn escape_on_the_home_screen_does_not_quit() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(!app.should_quit(), "only q and ctrl+c leave the program");
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+        app.handle(ch('q'), t0);
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn aborting_a_stage_needs_a_second_escape_within_two_seconds() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        app.handle(ch('e'), t0);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(100));
+        assert!(
+            matches!(app.screen(), Screen::Typing(_)),
+            "the first Esc only asks"
+        );
+        let buffer = render_at(&app, t0 + ms(150));
+        assert!(find(&buffer, "abort this lesson?").is_some());
+        let buffer = render_at(&app, t0 + ms(2_150));
+        assert!(
+            find(&buffer, "abort this lesson?").is_none(),
+            "asked for 2s"
+        );
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(2_200));
+        assert!(
+            matches!(app.screen(), Screen::Typing(_)),
+            "too late to confirm, so it asks again"
+        );
+        let end = stored(app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(2_300)))
+            .expect("stored");
+        assert!(!end.finished);
+        assert!(matches!(app.screen(), Screen::Results { .. }));
+    }
+
+    #[test]
+    fn typing_on_takes_back_the_abort_question() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        app.handle(ch('e'), t0 + ms(50));
+        let buffer = render_at(&app, t0 + ms(100));
+        assert!(find(&buffer, "abort this lesson?").is_none());
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(150));
+        assert!(
+            matches!(app.screen(), Screen::Typing(_)),
+            "the next Esc asks from scratch"
+        );
+    }
+
     fn render(app: &App) -> Buffer {
+        render_at(app, Instant::now())
+    }
+
+    fn render_at(app: &App, now: Instant) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
-        terminal
-            .draw(|frame| app.render(frame, Instant::now()))
-            .unwrap();
+        terminal.draw(|frame| app.render(frame, now)).unwrap();
         terminal.backend().buffer().clone()
     }
 
