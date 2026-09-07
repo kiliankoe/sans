@@ -462,7 +462,7 @@ impl App {
         match key.code {
             KeyCode::Down => *selected = (*selected + 1).min(last),
             KeyCode::Up => *selected = selected.saturating_sub(1),
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 let selected = *selected;
                 if self.progress.available(&self.course, selected) {
                     self.start_stage(selected, 0);
@@ -580,7 +580,7 @@ impl App {
         let finished = *finished;
         let passed = finished && summary.error_rate <= PASS_ERROR_RATE;
         match key.code {
-            KeyCode::Enter => match &active.source {
+            KeyCode::Enter | KeyCode::Char(' ') => match &active.source {
                 Source::Lesson {
                     lesson,
                     stage,
@@ -969,7 +969,7 @@ mod tests {
         let first = app.active().unwrap().engine.target().to_vec();
         let buffer = render(&app);
         assert!(find(&buffer, "Round complete").is_some());
-        assert!(find(&buffer, "Enter: another round").is_some());
+        assert!(find(&buffer, "Enter/Space: another round").is_some());
         app.handle(enter(), t0);
         assert!(is_practice(&app));
         assert_ne!(app.active().unwrap().engine.target(), first.as_slice());
@@ -1301,7 +1301,7 @@ mod tests {
         assert_eq!(end.file_progress.unwrap().next_chunk, 4);
         let buffer = render(&app);
         assert!(find(&buffer, "Chunk complete").is_some());
-        assert!(find(&buffer, "Enter: back to files").is_some());
+        assert!(find(&buffer, "Enter/Space: back to files").is_some());
         app.handle(enter(), t0);
         assert!(matches!(app.screen(), Screen::Files { .. }));
     }
@@ -1491,6 +1491,17 @@ mod tests {
     }
 
     #[test]
+    fn space_starts_a_stage_and_advances_like_enter() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(ch(' '), t0);
+        assert_eq!(stage_of(&app), (0, 0, StageKind::Intro));
+        type_stage(&mut app, t0, None);
+        app.handle(ch(' '), t0);
+        assert_eq!(stage_of(&app), (0, 1, StageKind::Bigrams));
+    }
+
+    #[test]
     fn results_screen_shows_verdict_and_next_action() {
         let mut app = app();
         let t0 = Instant::now();
@@ -1498,7 +1509,7 @@ mod tests {
         type_stage(&mut app, t0, None);
         let buffer = render(&app);
         assert!(find(&buffer, "Stage complete").is_some());
-        assert!(find(&buffer, "Enter: next stage").is_some());
+        assert!(find(&buffer, "Enter/Space: next stage").is_some());
         assert!(find(&buffer, "error rate").is_some());
     }
 }
