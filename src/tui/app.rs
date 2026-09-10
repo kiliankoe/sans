@@ -6,11 +6,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use super::stats as stats_screen;
 use super::stats::{Range, StatsView};
 use super::typing::HintPane;
-use super::{files as files_screen, home, results, typing};
+use super::{complete, files as files_screen, home, results, typing};
 use crate::clock::Clock;
 use crate::course::{Course, PASS_ERROR_RATE, Progress, Resume, StageKind};
 use crate::engine::{Engine, Key, Keystroke, Outcome};
@@ -935,6 +936,17 @@ impl App {
                 leave_asked,
             } => {
                 let passed = *finished && summary.error_rate <= PASS_ERROR_RATE;
+                // A passed test ends the lesson, which is worth more than a stage report.
+                if let Source::Lesson {
+                    lesson,
+                    kind: StageKind::Test,
+                    ..
+                } = &active.source
+                    && passed
+                {
+                    self.draw_complete(frame, area, *lesson, summary);
+                    return;
+                }
                 let (what, is_test, next) = match &active.source {
                     Source::Lesson { kind, .. } => {
                         let next = match (*finished, kind) {
@@ -968,6 +980,35 @@ impl App {
                 results::draw(frame, area, &view);
             }
         }
+    }
+
+    fn draw_complete(&self, frame: &mut Frame, area: Rect, lesson: usize, summary: &Summary) {
+        let lessons = self.course.lessons().len();
+        let definition = &self.course.lessons()[lesson];
+        let passed = self
+            .course
+            .lessons()
+            .iter()
+            .filter(|l| self.progress.passed(&l.id))
+            .count();
+        complete::draw(
+            frame,
+            area,
+            &complete::View {
+                number: lesson + 1,
+                lessons,
+                title: &definition.title,
+                keys: &definition.new.join(" "),
+                summary,
+                passed,
+                habit: &self.snapshot.habit,
+                next_label: if lesson + 1 < lessons {
+                    "next lesson"
+                } else {
+                    "back to the lessons"
+                },
+            },
+        );
     }
 }
 
@@ -1851,6 +1892,60 @@ mod tests {
     }
 
     #[test]
+    fn a_passed_test_ends_the_lesson_on_a_screen_of_its_own() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        for _ in 0..3 {
+            type_stage(&mut app, t0, None);
+            app.handle(enter(), t0);
+        }
+        type_stage(&mut app, t0, None);
+        let buffer = render(&app);
+        assert!(find(&buffer, "Lesson 1 of 35 done").is_some());
+        assert!(find(&buffer, "e and n").is_some());
+        assert!(find(&buffer, "1 of 35 lessons passed").is_some());
+        assert!(find(&buffer, "good place to stop").is_some());
+        assert!(find(&buffer, "Enter/Space: next lesson").is_some());
+        assert!(
+            find(&buffer, "error rate").is_none(),
+            "not the stage report card"
+        );
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app), (1, 0, StageKind::Intro));
+    }
+
+    #[test]
+    fn the_last_lesson_ends_by_going_back_to_the_list() {
+        let course = Course::load(Layout::Bone).unwrap();
+        let mut progress = Progress::new();
+        for lesson in course.lessons() {
+            progress.record(&lesson.id, 0.0);
+        }
+        let last = course.lessons().len() - 1;
+        let mut app = App::new(
+            course,
+            Corpus::load(),
+            progress,
+            Resume::new(),
+            Snapshot::empty("2026-09-05"),
+            Vec::new(),
+            Settings::default(),
+        );
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app).0, last);
+        for _ in 0..2 {
+            type_stage(&mut app, t0, None);
+            app.handle(enter(), t0);
+        }
+        type_stage(&mut app, t0, None);
+        assert!(find(&render(&app), "Enter/Space: back to the lessons").is_some());
+        app.handle(enter(), t0);
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+    }
+
+    #[test]
     fn only_a_test_stage_shows_the_pass_threshold() {
         let mut app = app();
         let t0 = Instant::now();
@@ -1862,10 +1957,12 @@ mod tests {
             find(&buffer, "pass at").is_none(),
             "only the test decides whether a lesson passes"
         );
-        for _ in 0..3 {
+        for _ in 0..2 {
             app.handle(enter(), t0);
             type_stage(&mut app, t0, None);
         }
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, Some(10));
         assert_eq!(stage_of(&app).2, StageKind::Test);
         assert!(find(&render(&app), "pass at").is_some());
     }

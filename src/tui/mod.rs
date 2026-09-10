@@ -1,6 +1,7 @@
 //! Terminal UI. Everything that knows about ratatui or crossterm lives under here.
 
 mod app;
+mod complete;
 mod files;
 mod home;
 mod keyboard;
