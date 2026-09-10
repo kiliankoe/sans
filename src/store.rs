@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
-use crate::course::{PASS_ERROR_RATE, Progress};
+use crate::course::{PASS_ERROR_RATE, Progress, Resume, StageKind};
 use crate::engine::{Keystroke, KeystrokeKind};
 use crate::stats::{self, DayStat, LessonStat, Snapshot, Stroke, Summary};
 
@@ -209,6 +209,36 @@ impl Store {
             progress.record(&lesson, best);
         }
         Ok(progress)
+    }
+
+    /// Where each lesson resumes, read off its most recently finished stage.
+    pub fn lesson_resume(&self) -> Result<Resume> {
+        let mut select = self.conn.prepare(
+            "SELECT lesson, stage, stage_kind, error_rate FROM session s
+             WHERE finished = 1 AND lesson IS NOT NULL AND stage IS NOT NULL
+               AND id = (SELECT max(id) FROM session
+                         WHERE lesson = s.lesson AND finished = 1 AND stage IS NOT NULL)",
+        )?;
+        let rows = select.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })?;
+        let mut resume = Resume::new();
+        for row in rows {
+            let (lesson, stage, stage_kind, error_rate) = row?;
+            let kind = stage_kind
+                .as_deref()
+                .and_then(StageKind::from_name)
+                .unwrap_or(StageKind::Words);
+            // The stored stage counts from one.
+            let stage = (stage as usize).saturating_sub(1);
+            resume.finished(&lesson, stage, kind, error_rate <= PASS_ERROR_RATE);
+        }
+        Ok(resume)
     }
 
     pub fn file_progress(&self, path: &str) -> Result<Option<FileProgress>> {
@@ -487,6 +517,34 @@ mod tests {
             !progress.passed("a03"),
             "an abandoned test does not pass a lesson"
         );
+    }
+
+    #[test]
+    fn a_lesson_resumes_after_its_last_finished_stage() {
+        let mut store = Store::open_in_memory().unwrap();
+        let log = sample_log();
+        let mut summary = crate::stats::summarize(&log);
+        let mut record = |lesson: &str, stage: u32, stage_kind: &str, finished, error_rate| {
+            summary.error_rate = error_rate;
+            let meta = SessionMeta {
+                lesson: Some(lesson),
+                stage: Some(stage),
+                stage_kind: Some(stage_kind),
+                finished,
+                ..sample_meta()
+            };
+            store.record(&meta, &summary, &log).unwrap();
+        };
+        record("a01", 1, "intro", true, 0.0);
+        record("a01", 2, "bigrams", true, 0.0);
+        record("a01", 3, "words", false, 0.0);
+        record("a02", 4, "test", true, 0.5);
+        record("a03", 4, "test", true, 0.0);
+        let resume = store.lesson_resume().unwrap();
+        assert_eq!(resume.stage("a01"), 2, "an abandoned stage is not finished");
+        assert_eq!(resume.stage("a02"), 3, "a failed test is repeated");
+        assert_eq!(resume.stage("a03"), 0, "a passed lesson starts over");
+        assert_eq!(resume.stage("a04"), 0, "untouched lessons start at the top");
     }
 
     #[test]

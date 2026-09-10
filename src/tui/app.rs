@@ -12,7 +12,7 @@ use super::stats::{Range, StatsView};
 use super::typing::HintPane;
 use super::{files as files_screen, home, results, typing};
 use crate::clock::Clock;
-use crate::course::{Course, PASS_ERROR_RATE, Progress, StageKind};
+use crate::course::{Course, PASS_ERROR_RATE, Progress, Resume, StageKind};
 use crate::engine::{Engine, Key, Keystroke, Outcome};
 use crate::files::FileSession;
 use crate::layout::{self, Layout};
@@ -88,6 +88,8 @@ pub enum Screen {
         active: Box<Active>,
         summary: Summary,
         finished: bool,
+        /// The key that asked to leave a lesson, waiting for a second press.
+        leave_asked: Option<(KeyCode, Instant)>,
     },
 }
 
@@ -152,6 +154,7 @@ pub struct App {
     course: Course,
     corpus: Corpus,
     progress: Progress,
+    resume: Resume,
     snapshot: Snapshot,
     files: Vec<FileProgress>,
     settings: Settings,
@@ -165,6 +168,7 @@ impl App {
         course: Course,
         corpus: Corpus,
         progress: Progress,
+        resume: Resume,
         snapshot: Snapshot,
         files: Vec<FileProgress>,
         settings: Settings,
@@ -174,6 +178,7 @@ impl App {
             course,
             corpus,
             progress,
+            resume,
             snapshot,
             files,
             settings,
@@ -232,7 +237,8 @@ impl App {
 
     fn start_stage(&mut self, lesson: usize, stage: usize) {
         let kinds = self.course.stages(lesson);
-        let kind = kinds[stage.min(kinds.len() - 1)];
+        let stage = stage.min(kinds.len() - 1);
+        let kind = kinds[stage];
         let seed: u64 = rand::random();
         let unlocked = self.course.unlocked_through(lesson);
         let definition = &self.course.lessons()[lesson];
@@ -451,7 +457,7 @@ impl App {
                 .handle_typing_key(key, now)
                 .map(|end| Effect::Store(Box::new(end))),
             Screen::Results { .. } => {
-                self.handle_results_key(key);
+                self.handle_results_key(key, now);
                 None
             }
             Screen::Stats(_) => {
@@ -472,7 +478,12 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let selected = *selected;
                 if self.progress.available(&self.course, selected) {
-                    self.start_stage(selected, 0);
+                    let stage = self.resume.stage(&self.course.lessons()[selected].id);
+                    if stage > 0 {
+                        let label = self.resume_label(selected);
+                        self.notify(&format!("resuming at the {label} stage"), now);
+                    }
+                    self.start_stage(selected, stage);
                 } else {
                     self.notify("locked: pass the lesson before it first", now);
                 }
@@ -582,11 +593,15 @@ impl App {
         None
     }
 
-    fn handle_results_key(&mut self, key: KeyEvent) {
+    fn handle_results_key(&mut self, key: KeyEvent, now: Instant) {
+        if self.asks_before_leaving(key, now) {
+            return;
+        }
         let Screen::Results {
             active,
             summary,
             finished,
+            ..
         } = &self.screen
         else {
             return;
@@ -658,6 +673,36 @@ impl App {
         }
     }
 
+    /// Leaving a lesson part way through takes two presses of the same key, so a stray Esc
+    /// or q does not drop out of it. Any other key answers the question.
+    fn asks_before_leaving(&mut self, key: KeyEvent, now: Instant) -> bool {
+        let Screen::Results {
+            active,
+            summary,
+            finished,
+            leave_asked,
+        } = &mut self.screen
+        else {
+            return false;
+        };
+        let asked = leave_asked.take();
+        if !matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            return false;
+        }
+        let Source::Lesson { kind, .. } = &active.source else {
+            return false;
+        };
+        // A passed test ends the lesson, and an abandoned stage was left on purpose already.
+        let passed_test = *kind == StageKind::Test && summary.error_rate <= PASS_ERROR_RATE;
+        let confirmed = asked
+            .is_some_and(|(code, at)| code == key.code && now.duration_since(at) < ABORT_CONFIRM);
+        if !*finished || passed_test || confirmed {
+            return false;
+        }
+        *leave_asked = Some((key.code, now));
+        true
+    }
+
     /// Moves to the results screen and describes what to store.
     fn finish(&mut self, finished: bool) -> Option<SessionEnd> {
         let Screen::Typing(active) =
@@ -676,8 +721,12 @@ impl App {
                 seed,
             } => {
                 let lesson_id = self.course.lessons()[*lesson].id.clone();
-                if finished && *kind == StageKind::Test {
-                    self.progress.record(&lesson_id, summary.error_rate);
+                if finished {
+                    let passed = summary.error_rate <= PASS_ERROR_RATE;
+                    if *kind == StageKind::Test {
+                        self.progress.record(&lesson_id, summary.error_rate);
+                    }
+                    self.resume.finished(&lesson_id, *stage, *kind, passed);
                 }
                 SessionEnd {
                     kind: "lesson",
@@ -729,6 +778,7 @@ impl App {
             active,
             summary,
             finished,
+            leave_asked: None,
         };
         (!end.log.is_empty() || end.file_progress.is_some()).then_some(end)
     }
@@ -744,6 +794,32 @@ impl App {
             .abort_asked_at
             .filter(|at| now.duration_since(*at) < ABORT_CONFIRM)
             .map(|_| format!("abort this {what}? press Esc again to confirm"))
+    }
+
+    /// The pending question about leaving a lesson, once a first Esc or q has asked it.
+    fn leave_question(
+        &self,
+        active: &Active,
+        asked: Option<(KeyCode, Instant)>,
+        now: Instant,
+    ) -> Option<String> {
+        let (code, _) = asked.filter(|(_, at)| now.duration_since(*at) < ABORT_CONFIRM)?;
+        let Source::Lesson { lesson, .. } = &active.source else {
+            return None;
+        };
+        let key = if code == KeyCode::Esc { "Esc" } else { "q" };
+        Some(format!(
+            "leave this lesson? it resumes at the {} stage, press {key} again to confirm",
+            self.resume_label(*lesson)
+        ))
+    }
+
+    /// What the stage a lesson would start at now is called.
+    fn resume_label(&self, lesson: usize) -> &'static str {
+        let stages = self.course.stages(lesson);
+        let definition = &self.course.lessons()[lesson];
+        let at = self.resume.stage(&definition.id).min(stages.len() - 1);
+        stages[at].label(definition.code)
     }
 
     fn flash_text(&self, now: Instant) -> Option<String> {
@@ -821,6 +897,7 @@ impl App {
                 active,
                 summary,
                 finished,
+                leave_asked,
             } => {
                 let passed = *finished && summary.error_rate <= PASS_ERROR_RATE;
                 let (what, is_test, next) = match &active.source {
@@ -843,6 +920,7 @@ impl App {
                     }
                     Source::Practice { .. } => ("Round", false, "another round"),
                 };
+                let question = self.leave_question(active, *leave_asked, now);
                 let view = results::View {
                     title: &self.title(active),
                     summary,
@@ -850,6 +928,7 @@ impl App {
                     what,
                     is_test,
                     next_label: next,
+                    question: question.as_deref(),
                 };
                 results::draw(frame, area, &view);
             }
@@ -895,6 +974,7 @@ mod tests {
             Course::load(Layout::Bone).unwrap(),
             Corpus::load(),
             Progress::new(),
+            Resume::new(),
             Snapshot::empty("2026-09-04"),
             Vec::new(),
             Settings::default(),
@@ -1111,6 +1191,7 @@ mod tests {
             Course::load(Layout::Bone).unwrap(),
             Corpus::load(),
             progress,
+            Resume::new(),
             Snapshot::empty("2026-09-04"),
             Vec::new(),
             Settings::default(),
@@ -1491,6 +1572,7 @@ mod tests {
             course,
             Corpus::load(),
             progress,
+            Resume::new(),
             Snapshot::empty("2026-09-05"),
             Vec::new(),
             Settings::default(),
@@ -1556,6 +1638,7 @@ mod tests {
             course,
             Corpus::load(),
             progress,
+            Resume::new(),
             Snapshot::empty("2026-09-05"),
             Vec::new(),
             Settings::default(),
@@ -1588,6 +1671,110 @@ mod tests {
         type_stage(&mut app, t0, None);
         app.handle(ch(' '), t0);
         assert_eq!(stage_of(&app), (0, 1, StageKind::Bigrams));
+    }
+
+    #[test]
+    fn a_lesson_resumes_at_the_stage_after_the_last_finished_one() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        abort(&mut app, t0);
+        assert!(matches!(app.screen(), Screen::Home { selected: 0 }));
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app), (0, 1, StageKind::Bigrams));
+        assert!(
+            app.flash_text(t0).is_some_and(|f| f.contains("resuming")),
+            "starting a resumed lesson says so"
+        );
+        type_stage(&mut app, t0, None);
+        abort(&mut app, t0);
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app), (0, 2, StageKind::Words));
+    }
+
+    #[test]
+    fn a_passed_lesson_starts_over_and_a_failed_test_comes_again() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        for _ in 0..3 {
+            type_stage(&mut app, t0, None);
+            app.handle(enter(), t0);
+        }
+        assert_eq!(stage_of(&app).2, StageKind::Test);
+        type_stage(&mut app, t0, Some(10));
+        assert!(!app.progress().passed("bone-a01"));
+        abort(&mut app, t0);
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app).2, StageKind::Test, "the test comes again");
+        type_stage(&mut app, t0, None);
+        assert!(app.progress().passed("bone-a01"));
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(
+            matches!(app.screen(), Screen::Home { .. }),
+            "a passed test leaves without asking"
+        );
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app), (0, 0, StageKind::Intro), "starts over");
+    }
+
+    #[test]
+    fn leaving_a_lesson_part_way_through_asks_first() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(
+            matches!(app.screen(), Screen::Results { .. }),
+            "the first Esc only asks"
+        );
+        let buffer = render_at(&app, t0 + ms(100));
+        assert!(find(&buffer, "leave this lesson?").is_some());
+        assert!(find(&buffer, "press Esc again").is_some());
+        app.handle(ch('q'), t0 + ms(100));
+        assert!(!app.should_quit(), "q asks for itself");
+        assert!(find(&render_at(&app, t0 + ms(150)), "press q again").is_some());
+        app.handle(ch('q'), t0 + ms(200));
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn the_question_about_leaving_expires() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(find(&render_at(&app, t0 + ms(2_500)), "leave this lesson?").is_none());
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(2_500));
+        assert!(
+            matches!(app.screen(), Screen::Results { .. }),
+            "a late second Esc asks again"
+        );
+        app.handle(press(KeyCode::Esc, KeyModifiers::NONE), t0 + ms(2_600));
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+    }
+
+    #[test]
+    fn only_a_test_stage_shows_the_pass_threshold() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        let buffer = render(&app);
+        assert!(find(&buffer, "error rate").is_some());
+        assert!(
+            find(&buffer, "pass at").is_none(),
+            "only the test decides whether a lesson passes"
+        );
+        for _ in 0..3 {
+            app.handle(enter(), t0);
+            type_stage(&mut app, t0, None);
+        }
+        assert_eq!(stage_of(&app).2, StageKind::Test);
+        assert!(find(&render(&app), "pass at").is_some());
     }
 
     #[test]

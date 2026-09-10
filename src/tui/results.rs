@@ -21,6 +21,8 @@ pub struct View<'a> {
     pub is_test: bool,
     /// What Enter or Space does next.
     pub next_label: &'a str,
+    /// A pending question, shown under the keys until it is answered.
+    pub question: Option<&'a str>,
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
@@ -31,6 +33,7 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
         what,
         is_test,
         next_label,
+        question,
     } = *view;
     let threshold = PASS_ERROR_RATE;
     let passed = finished && summary.error_rate <= threshold;
@@ -43,15 +46,20 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
             Color::Red,
         ),
     };
+    // Only a test gates the lesson, so only it names the threshold.
+    let guard = if is_test {
+        format!("    (pass at {:.0} % or below)", threshold * 100.0)
+    } else {
+        String::new()
+    };
     let lines = vec![
         Line::from(title.to_string().bold()),
         Line::from(""),
         Line::styled(headline, Style::new().fg(color).bold()),
         Line::from(""),
         Line::from(format!(
-            "error rate   {:>6.2} %    (pass at {:.0} % or below)",
-            summary.error_rate * 100.0,
-            threshold * 100.0
+            "error rate   {:>6.2} %{guard}",
+            summary.error_rate * 100.0
         )),
         Line::from(format!("errors       {:>6}", summary.errors)),
         Line::from(format!("characters   {:>6}", summary.chars)),
@@ -66,6 +74,11 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
                 "Enter/Space: {next_label}    r: repeat    p: practice    Esc: back    q: quit"
             ),
             Style::new().fg(Color::DarkGray),
+        ),
+        // Always a line, so an appearing question does not shift the box.
+        Line::styled(
+            question.unwrap_or("").to_string(),
+            Style::new().fg(Color::Yellow),
         ),
     ];
     let width = lines

@@ -32,6 +32,16 @@ impl StageKind {
         }
     }
 
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "intro" => Some(StageKind::Intro),
+            "bigrams" => Some(StageKind::Bigrams),
+            "words" => Some(StageKind::Words),
+            "test" => Some(StageKind::Test),
+            _ => None,
+        }
+    }
+
     /// What the stage is called on screen; code lessons practise tokens and expressions.
     pub fn label(self, code: bool) -> &'static str {
         match (self, code) {
@@ -216,6 +226,36 @@ impl Progress {
     }
 }
 
+/// Where each lesson resumes: the stage it starts at when picked from the list, so leaving
+/// a lesson part way through does not throw the stages already done away.
+#[derive(Debug, Default, Clone)]
+pub struct Resume {
+    stage: HashMap<String, usize>,
+}
+
+impl Resume {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The stage a lesson starts at, past its last finished one. Never past the last stage,
+    /// which `Course::stages` decides, so the caller clamps.
+    pub fn stage(&self, lesson: &str) -> usize {
+        self.stage.get(lesson).copied().unwrap_or(0)
+    }
+
+    /// Records a finished stage of `lesson`. The test is the last stage: passing it ends the
+    /// lesson, so it starts over, and failing it means the test itself comes round again.
+    pub fn finished(&mut self, lesson: &str, stage: usize, kind: StageKind, passed: bool) {
+        let next = match kind {
+            StageKind::Test if passed => 0,
+            StageKind::Test => stage,
+            _ => stage + 1,
+        };
+        self.stage.insert(lesson.to_string(), next);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +361,18 @@ mod tests {
         assert_eq!(StageKind::Bigrams.label(true), "tokens");
         assert_eq!(StageKind::Words.label(true), "expressions");
         assert_eq!(StageKind::Words.label(false), "words");
+    }
+
+    #[test]
+    fn resume_points_past_the_last_finished_stage_until_the_test_passes() {
+        let mut resume = Resume::new();
+        assert_eq!(resume.stage("bone-a01"), 0);
+        resume.finished("bone-a01", 0, StageKind::Intro, false);
+        assert_eq!(resume.stage("bone-a01"), 1);
+        resume.finished("bone-a01", 3, StageKind::Test, false);
+        assert_eq!(resume.stage("bone-a01"), 3, "a failed test comes again");
+        resume.finished("bone-a01", 3, StageKind::Test, true);
+        assert_eq!(resume.stage("bone-a01"), 0);
     }
 
     #[test]

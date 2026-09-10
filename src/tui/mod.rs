@@ -44,13 +44,22 @@ pub fn run(start: Start) -> Result<()> {
     let config = Config::load()?;
     let course = Course::load(config.layout)?;
     let progress = store.lesson_progress()?;
+    let resume = store.lesson_resume()?;
     let snapshot = store.snapshot(config.daily_minutes)?;
     let recent = store.recent_files(App::recent_files_limit())?;
     let settings = Settings {
         indent: config.indent.into(),
         layout: config.layout,
     };
-    let mut app = App::new(course, Corpus::load(), progress, snapshot, recent, settings);
+    let mut app = App::new(
+        course,
+        Corpus::load(),
+        progress,
+        resume,
+        snapshot,
+        recent,
+        settings,
+    );
     match start {
         Start::Home => {}
         Start::File(path) => {

@@ -27,7 +27,7 @@ sans keys
 
 A lesson has four stages, ~2 min each. An intro drill with finger position hints, syllables from the most frequent bigrams, real words, and a test at the end. Symbol lessons practice tokens and expressions instead of syllables and words. A test needs to be passed to unlock the next lesson.
 
-A wrong key is shown in red and nothing but Backspace is accepted until it is fixed. Every wrong key counts as an error, and a stage passes at an error rate of <= 3%.
+A wrong key is shown in red and nothing but Backspace is accepted until it is fixed. Every wrong key counts as an error. The test at the end of a lesson has to be passed with an error rate of <=3%.
 
 ## Files
 

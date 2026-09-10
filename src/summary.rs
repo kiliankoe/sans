@@ -34,12 +34,8 @@ pub fn print_text(lesson: &str, stage: &str, seed: u64) -> Result<()> {
             course.lessons().len()
         );
     };
-    let kind = match stage {
-        "intro" => StageKind::Intro,
-        "bigrams" => StageKind::Bigrams,
-        "words" => StageKind::Words,
-        "test" => StageKind::Test,
-        other => bail!("unknown stage {other}; use intro, bigrams, words or test"),
+    let Some(kind) = StageKind::from_name(stage) else {
+        bail!("unknown stage {stage}; use intro, bigrams, words or test");
     };
     let unlocked = course.unlocked_through(index);
     let lesson = &course.lessons()[index];
