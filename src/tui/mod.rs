@@ -104,6 +104,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Store) 
                 app.set_snapshot(store.snapshot(target_minutes)?);
                 app.set_files(store.recent_files(App::recent_files_limit())?);
             }
+            Some(Effect::ResetLesson(lesson)) => store
+                .reset_lesson(&lesson)
+                .context("resetting the lesson")?,
             Some(Effect::OpenFile(path)) => match crate::files::open(Path::new(&path), store) {
                 Ok(session) => {
                     remember(store, &session)?;

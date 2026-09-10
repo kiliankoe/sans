@@ -136,6 +136,8 @@ impl SessionEnd {
 pub enum Effect {
     Store(Box<SessionEnd>),
     OpenFile(String),
+    /// Forget where this lesson resumed.
+    ResetLesson(String),
 }
 
 /// Live numbers for the status line.
@@ -160,6 +162,8 @@ pub struct App {
     settings: Settings,
     screen: Screen,
     flash: Option<(String, Instant)>,
+    /// The lesson a reset was asked about, waiting for the answer.
+    reset_asked: Option<usize>,
     quit: bool,
 }
 
@@ -184,6 +188,7 @@ impl App {
             settings,
             screen: Screen::Home { selected },
             flash: None,
+            reset_asked: None,
             quit: false,
         }
     }
@@ -448,10 +453,7 @@ impl App {
             };
         }
         match &self.screen {
-            Screen::Home { .. } => {
-                self.handle_home_key(key, now);
-                None
-            }
+            Screen::Home { .. } => self.handle_home_key(key, now),
             Screen::Files { .. } => self.handle_files_key(key),
             Screen::Typing(_) => self
                 .handle_typing_key(key, now)
@@ -467,14 +469,27 @@ impl App {
         }
     }
 
-    fn handle_home_key(&mut self, key: KeyEvent, now: Instant) {
+    fn handle_home_key(&mut self, key: KeyEvent, now: Instant) -> Option<Effect> {
+        // A pending reset question takes the next key: y does it, anything else cancels.
+        if let Some(lesson) = self.reset_asked.take() {
+            return (key.code == KeyCode::Char('y')).then(|| self.reset_lesson(lesson, now));
+        }
         let Screen::Home { selected } = &mut self.screen else {
-            return;
+            return None;
         };
         let last = self.course.lessons().len() - 1;
         match key.code {
             KeyCode::Down => *selected = (*selected + 1).min(last),
             KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Char('r') => {
+                let selected = *selected;
+                let lesson = &self.course.lessons()[selected];
+                if self.resume.stage(&lesson.id) == 0 {
+                    self.notify("nothing to reset, this lesson starts at the top", now);
+                } else {
+                    self.reset_asked = Some(selected);
+                }
+            }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let selected = *selected;
                 if self.progress.available(&self.course, selected) {
@@ -494,6 +509,16 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
+        None
+    }
+
+    /// Forgets where a lesson resumed, here and in the store.
+    fn reset_lesson(&mut self, lesson: usize, now: Instant) -> Effect {
+        let definition = &self.course.lessons()[lesson];
+        let (id, title) = (definition.id.clone(), definition.title.clone());
+        self.resume.reset(&id);
+        self.notify(&format!("\"{title}\" starts at the top again"), now);
+        Effect::ResetLesson(id)
     }
 
     fn handle_files_key(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -849,14 +874,24 @@ impl App {
         let area = frame.area();
         match &self.screen {
             Screen::Home { selected } => {
+                let question = self.reset_asked.map(|lesson| {
+                    format!(
+                        "reset \"{}\" and start it from the top? y/N",
+                        self.course.lessons()[lesson].title
+                    )
+                });
                 home::draw(
                     frame,
                     area,
-                    &self.course,
-                    &self.progress,
-                    &self.snapshot.habit,
-                    *selected,
-                    self.settings.layout,
+                    &home::View {
+                        course: &self.course,
+                        progress: &self.progress,
+                        resume: &self.resume,
+                        habit: &self.snapshot.habit,
+                        selected: *selected,
+                        layout: self.settings.layout,
+                        question: question.as_deref(),
+                    },
                 );
                 if let Some(message) = self.flash_text(now) {
                     typing::draw_flash(frame, area, &message);
@@ -1671,6 +1706,64 @@ mod tests {
         type_stage(&mut app, t0, None);
         app.handle(ch(' '), t0);
         assert_eq!(stage_of(&app), (0, 1, StageKind::Bigrams));
+    }
+
+    #[test]
+    fn resetting_a_lesson_asks_first_and_starts_it_over() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        abort(&mut app, t0);
+        app.handle(ch('r'), t0);
+        assert!(matches!(app.screen(), Screen::Home { .. }));
+        assert!(find(&render(&app), "y/N").is_some());
+        app.handle(ch('n'), t0);
+        assert!(find(&render(&app), "y/N").is_none(), "n cancels");
+        app.handle(enter(), t0);
+        assert_eq!(
+            stage_of(&app),
+            (0, 1, StageKind::Bigrams),
+            "the place is kept"
+        );
+        abort(&mut app, t0);
+        app.handle(ch('r'), t0);
+        let effect = app.handle(ch('y'), t0);
+        assert!(
+            matches!(&effect, Some(Effect::ResetLesson(id)) if id == "bone-a01"),
+            "the store forgets it too"
+        );
+        app.handle(enter(), t0);
+        assert_eq!(stage_of(&app), (0, 0, StageKind::Intro));
+    }
+
+    #[test]
+    fn resetting_a_lesson_that_has_not_started_says_so() {
+        let mut app = app();
+        let t0 = Instant::now();
+        app.handle(ch('r'), t0);
+        assert!(
+            app.flash_text(t0)
+                .is_some_and(|flash| flash.contains("nothing to reset")),
+            "no question for a lesson at its first stage"
+        );
+        assert!(find(&render(&app), "y/N").is_none());
+    }
+
+    #[test]
+    fn home_shows_how_far_a_lesson_got_and_the_reset_key() {
+        let mut app = app();
+        let t0 = Instant::now();
+        let buffer = render(&app);
+        assert!(find(&buffer, "r: reset").is_some());
+        assert!(
+            find(&buffer, "of 4 stages").is_none(),
+            "nothing started yet"
+        );
+        app.handle(enter(), t0);
+        type_stage(&mut app, t0, None);
+        abort(&mut app, t0);
+        assert!(find(&render(&app), "1 of 4 stages").is_some());
     }
 
     #[test]

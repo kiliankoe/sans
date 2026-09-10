@@ -6,20 +6,33 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::course::{Course, Progress};
+use crate::course::{Course, Progress, Resume};
 use crate::layout::Layout as KeyLayout;
 use crate::stats::Habit;
 use crate::summary::habit_line;
 
-pub fn draw(
-    frame: &mut Frame,
-    area: Rect,
-    course: &Course,
-    progress: &Progress,
-    habit: &Habit,
-    selected: usize,
-    layout: KeyLayout,
-) {
+/// What the lesson list shows.
+pub struct View<'a> {
+    pub course: &'a Course,
+    pub progress: &'a Progress,
+    pub resume: &'a Resume,
+    pub habit: &'a Habit,
+    pub selected: usize,
+    pub layout: KeyLayout,
+    /// A pending question, in place of the keys until it is answered.
+    pub question: Option<&'a str>,
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, view: &View) {
+    let View {
+        course,
+        progress,
+        resume,
+        habit,
+        selected,
+        layout,
+        question,
+    } = *view;
     let [title_area, list_area, help_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(1),
@@ -49,17 +62,24 @@ pub fn draw(
         .enumerate()
         .map(|(index, lesson)| {
             let available = progress.available(course, index);
-            let status = match progress.best(&lesson.id) {
-                Some(best) if progress.passed(&lesson.id) => Span::styled(
+            let (status, status_style) = match progress.best(&lesson.id) {
+                Some(best) if progress.passed(&lesson.id) => (
                     format!("passed {:.1}%", best * 100.0),
                     Style::new().fg(Color::Green),
                 ),
-                Some(best) => Span::styled(
+                Some(best) => (
                     format!("best {:.1}%", best * 100.0),
                     Style::new().fg(Color::Yellow),
                 ),
-                None if available => Span::styled("next", Style::new().fg(Color::Cyan)),
-                None => Span::styled("locked", Style::new().fg(Color::DarkGray)),
+                None if available => ("next".to_string(), Style::new().fg(Color::Cyan)),
+                None => ("locked".to_string(), Style::new().fg(Color::DarkGray)),
+            };
+            // Where the lesson resumes is how many of its stages are behind it.
+            let done = resume.stage(&lesson.id);
+            let started = if done > 0 && !progress.passed(&lesson.id) {
+                format!("{done} of {} stages", course.stages(index).len())
+            } else {
+                String::new()
             };
             let keys = lesson.new.join(" ");
             let base = if available {
@@ -70,7 +90,8 @@ pub fn draw(
             let row = Line::from(vec![
                 Span::styled(format!("{:>2}  {:<22}", index + 1, lesson.title), base),
                 Span::styled(format!("{:<24}", keys), base),
-                status,
+                Span::styled(format!("{status:<13}"), status_style),
+                Span::styled(started, Style::new().fg(Color::DarkGray)),
             ]);
             let mut lines = Vec::new();
             if let Some(section) = &lesson.section {
@@ -89,11 +110,13 @@ pub fn draw(
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, list_area, &mut state);
 
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            "Enter/Space: start    arrows: move    p: practice    f: files    s: stats    q: quit",
+    let help = match question {
+        Some(text) => Line::styled(text.to_string(), Style::new().fg(Color::Yellow)),
+        None => Line::styled(
+            "Enter/Space: start    arrows: move    r: reset    p: practice    f: files    \
+             s: stats    q: quit",
             Style::new().fg(Color::DarkGray),
-        )),
-        help_area,
-    );
+        ),
+    };
+    frame.render_widget(Paragraph::new(help), help_area);
 }

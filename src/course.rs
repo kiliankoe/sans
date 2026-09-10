@@ -254,6 +254,11 @@ impl Resume {
         };
         self.stage.insert(lesson.to_string(), next);
     }
+
+    /// Starts a lesson over from its first stage.
+    pub fn reset(&mut self, lesson: &str) {
+        self.stage.remove(lesson);
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +377,9 @@ mod tests {
         resume.finished("bone-a01", 3, StageKind::Test, false);
         assert_eq!(resume.stage("bone-a01"), 3, "a failed test comes again");
         resume.finished("bone-a01", 3, StageKind::Test, true);
+        assert_eq!(resume.stage("bone-a01"), 0);
+        resume.finished("bone-a01", 1, StageKind::Bigrams, false);
+        resume.reset("bone-a01");
         assert_eq!(resume.stage("bone-a01"), 0);
     }
 

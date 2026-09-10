@@ -13,7 +13,7 @@ use crate::course::{PASS_ERROR_RATE, Progress, Resume, StageKind};
 use crate::engine::{Keystroke, KeystrokeKind};
 use crate::stats::{self, DayStat, LessonStat, Snapshot, Stroke, Summary};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE session (
@@ -53,6 +53,14 @@ CREATE TABLE file_progress (
     next_chunk   INTEGER NOT NULL,
     chunks       INTEGER NOT NULL,
     updated_at   TEXT    NOT NULL
+);
+";
+
+/// Lessons started over: stages typed before the reset no longer say where a lesson resumes.
+const SCHEMA_V4: &str = "
+CREATE TABLE lesson_reset (
+    lesson    TEXT PRIMARY KEY,
+    reset_at  TEXT NOT NULL
 );
 ";
 
@@ -120,7 +128,7 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         let store = Self { conn };
-        let migrations = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+        let migrations = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
         let applied = store.schema_version()?.clamp(0, SCHEMA_VERSION) as usize;
         for (index, migration) in migrations.iter().enumerate().skip(applied) {
             store.conn.execute_batch(migration)?;
@@ -211,13 +219,19 @@ impl Store {
         Ok(progress)
     }
 
-    /// Where each lesson resumes, read off its most recently finished stage.
+    /// Where each lesson resumes, read off its most recently finished stage since its last
+    /// reset.
     pub fn lesson_resume(&self) -> Result<Resume> {
         let mut select = self.conn.prepare(
-            "SELECT lesson, stage, stage_kind, error_rate FROM session s
-             WHERE finished = 1 AND lesson IS NOT NULL AND stage IS NOT NULL
-               AND id = (SELECT max(id) FROM session
-                         WHERE lesson = s.lesson AND finished = 1 AND stage IS NOT NULL)",
+            "WITH latest AS (
+                 SELECT s.lesson AS lesson, max(s.id) AS id FROM session s
+                 LEFT JOIN lesson_reset r ON r.lesson = s.lesson
+                 WHERE s.finished = 1 AND s.lesson IS NOT NULL AND s.stage IS NOT NULL
+                   AND (r.reset_at IS NULL OR s.started_at >= r.reset_at)
+                 GROUP BY s.lesson
+             )
+             SELECT s.lesson, s.stage, s.stage_kind, s.error_rate FROM session s
+             JOIN latest ON latest.id = s.id",
         )?;
         let rows = select.query_map([], |row| {
             Ok((
@@ -239,6 +253,19 @@ impl Store {
             resume.finished(&lesson, stage, kind, error_rate <= PASS_ERROR_RATE);
         }
         Ok(resume)
+    }
+
+    /// Starts a lesson over: the stages typed so far stop counting towards where it resumes.
+    /// The sessions themselves stay, so the stats keep them. Timestamps are whole seconds, so
+    /// a stage begun in the same second as the reset counts as after it.
+    pub fn reset_lesson(&mut self, lesson: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO lesson_reset (lesson, reset_at)
+             VALUES (?1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+             ON CONFLICT(lesson) DO UPDATE SET reset_at = excluded.reset_at",
+            params![lesson],
+        )?;
+        Ok(())
     }
 
     pub fn file_progress(&self, path: &str) -> Result<Option<FileProgress>> {
@@ -545,6 +572,45 @@ mod tests {
         assert_eq!(resume.stage("a02"), 3, "a failed test is repeated");
         assert_eq!(resume.stage("a03"), 0, "a passed lesson starts over");
         assert_eq!(resume.stage("a04"), 0, "untouched lessons start at the top");
+    }
+
+    #[test]
+    fn resetting_a_lesson_forgets_the_stages_done_before_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        let log = sample_log();
+        let summary = crate::stats::summarize(&log);
+        let mut record = |lesson: &str, stage: u32, stage_kind: &str| {
+            let meta = SessionMeta {
+                lesson: Some(lesson),
+                stage: Some(stage),
+                stage_kind: Some(stage_kind),
+                // Before the reset, which the store stamps with the clock.
+                started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+                ..sample_meta()
+            };
+            store.record(&meta, &summary, &log).unwrap();
+        };
+        record("a01", 1, "intro");
+        record("a01", 2, "bigrams");
+        record("a02", 1, "intro");
+        store.reset_lesson("a01").unwrap();
+        let resume = store.lesson_resume().unwrap();
+        assert_eq!(resume.stage("a01"), 0);
+        assert_eq!(resume.stage("a02"), 1, "other lessons keep their place");
+
+        let meta = SessionMeta {
+            lesson: Some("a01"),
+            stage: Some(1),
+            stage_kind: Some("intro"),
+            started_at: SystemTime::now(),
+            ..sample_meta()
+        };
+        store.record(&meta, &summary, &log).unwrap();
+        assert_eq!(
+            store.lesson_resume().unwrap().stage("a01"),
+            1,
+            "stages after the reset count again"
+        );
     }
 
     #[test]
